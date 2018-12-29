@@ -34,28 +34,6 @@ ner_tags: list = ner_tags_without_prefixes if trim_ner_tag_prefixes else ner_tag
 # using a multi-layered lstm didn't improve the mean test-loss much
 ner_tagger = LSTMTagger(word_vector_size, hidden_state_size, True, 1, len(ner_tags))
 
-external_test_sentence_1 = "Inside the airport that bears his name, George Herbert Walker Bush looks, at a distance," \
-                           " as if he’s wearing a cape."
-
-
-external_test_sentence_2 = "The compromise, struck over a steak dinner at the Group of 20 meeting here and announced in" \
-                           " a White House statement, was less a breakthrough than a breakdown averted"
-
-embeddings_for_test_sentence_1 = vector_encoding_utils.get_word_embeddings_for_test_sentence(external_test_sentence_1.split())
-embeddings_for_test_sentence_2 = vector_encoding_utils.get_word_embeddings_for_test_sentence(external_test_sentence_2.split())
-
-# print("embeddings_for_test_sentence_1" + str(torch.tensor(embeddings_for_test_sentence_1)))
-# print("embeddings_for_test_sentence_2" + str(torch.tensor(embeddings_for_test_sentence_2)))
-#
-# sentence_embedding_tensor_1 = torch.cat(embeddings_for_test_sentence_1, 0).view(len(embeddings_for_test_sentence_1), 1, -1)
-# sentence_embedding_tensor_2 = torch.cat(embeddings_for_test_sentence_2, 0).view(len(embeddings_for_test_sentence_2), 1, -1)
-#
-# tag_scores_test_1 = ner_tagger(sentence_embedding_tensor_1[0], sentence_embedding_tensor_1[0].shape[1])
-# tag_scores_test_2 = ner_tagger(sentence_embedding_tensor_2[0], sentence_embedding_tensor_2[0].shape[1])
-#
-# print(tag_scores_test_1)
-# print(tag_scores_test_2)
-
 
 def resolve_ner_tag_trim_if_necessary(ner_tag_with_prefix: str) -> str:
     return ner_tag_with_prefix[2:] if trim_ner_tag_prefixes and len(ner_tag_with_prefix) > 2 and \
@@ -82,7 +60,7 @@ shuffle(all_sentence_batches_as_tensor_tuples)
 training_sequence_length = floor(len(all_sentence_batches_as_tensor_tuples) * 0.8)
 training_sentence_batches_as_tensor_tuples = all_sentence_batches_as_tensor_tuples[:training_sequence_length]
 
-for epoch in range(4):
+for epoch in range(0):
     shuffle(training_sentence_batches_as_tensor_tuples)
     for sentence_batch_tensor_with_labels in training_sentence_batches_as_tensor_tuples:
         ner_tagger.zero_grad()
@@ -105,26 +83,39 @@ test_sentence_batches_as_tensor_tuples = all_sentence_batches_as_tensor_tuples[t
 mean_loss: int = 0
 test_step_num: int = 0
 test_step_to_loss_dict = collections.OrderedDict()
+num_accurate_tags: int = 0
+num_inaccurate_tags: int = 0
 
 for sentence_batch_tensor_with_labels in test_sentence_batches_as_tensor_tuples:
     tag_scores = ner_tagger(sentence_batch_tensor_with_labels[0], sentence_batch_tensor_with_labels[0].shape[1]).permute(1, 0, 2)
     # print("tag score tensor:" + str(tag_scores.data))
     print("tag score tensor shape, test phase:" + str(tag_scores.data.shape))
     target_values = sentence_batch_tensor_with_labels[1].permute(1, 0, 2)
-    index_for_one_as_row_tensor = (target_values == 1).nonzero()
 
-    label_from_target_value = target_values[index_for_one_as_row_tensor[0, 0].item(),
-                                            index_for_one_as_row_tensor[0, 1].item(),
-                                            index_for_one_as_row_tensor[0, 2].item()]
-    label_from_tag_scores = tag_scores[index_for_one_as_row_tensor[0, 0].item(),
-                                       index_for_one_as_row_tensor[0, 1].item(),
-                                       index_for_one_as_row_tensor[0, 2].item()]
+    index_for_one_as_row_tensor = target_values.nonzero()
 
-    print("target_values shape, test phase:" + str(target_values.data.shape))
+    # label_from_target_value = target_values[index_for_one_as_row_tensor[0, 0].item(),
+    #                                         index_for_one_as_row_tensor[0, 1].item(),
+    #                                         index_for_one_as_row_tensor[0, 2].item()]
+    # label_from_tag_scores = tag_scores[index_for_one_as_row_tensor[0, 0].item(),
+    #                                    index_for_one_as_row_tensor[0, 1].item(),
+    #                                    index_for_one_as_row_tensor[0, 2].item()]
+    #
+    # print("target_values shape, test phase:" + str(target_values.data.shape))
+    #
+    # print("comparing with target value: target = " + str(label_from_target_value) +
+    #       ", tag_score for target_index = " + str(label_from_tag_scores))
+    # # print("target_values tensor" + str(target_values.data))
 
-    print("comparing with target value: target = " + str(label_from_target_value) +
-          ", tag_score for target_index = " + str(label_from_tag_scores))
-    # print("target_values tensor" + str(target_values.data))
+    for dim_0_idx in range(tag_scores.shape[0]):
+        for dim_1_idx in range(tag_scores.shape[1]):
+            top_score_with_array_index = torch.topk(tag_scores[dim_0_idx, dim_1_idx], 1, dim=0)
+            if target_values[dim_0_idx, dim_1_idx, int(top_score_with_array_index[1].item())].item() == 1:
+                if num_accurate_tags <= 2:
+                    print(target_values[dim_0_idx, dim_1_idx, int(top_score_with_array_index[1].item())].item())
+                num_accurate_tags += 1
+            else:
+                num_inaccurate_tags += 1
 
     loss = loss_function(tag_scores, target_values)
     test_step_to_loss_dict[test_step_num] = loss.data.item()
@@ -143,7 +134,49 @@ plt.ylabel("test_loss")
 plt.show()
 
 print("mean test loss: " + str(fsum(test_loss_values_ordered) / len(test_loss_values_ordered)))
+print("num accurate tags: " + str(num_accurate_tags))
+print("num inaccurate tags: " + str(num_inaccurate_tags))
+
 torch.save(ner_tagger.state_dict(keep_vars=True), "./ner_tagger.torch")
+
+
+external_test_sentence_1 = "Inside the airport that bears his name, George Herbert Walker Bush looks, at a distance," \
+                           " as if he’s wearing a cape".split()
+
+
+external_test_sentence_2 = "The compromise, struck over a steak dinner at the Group of 20 meeting here and announced in" \
+                           " a White House statement, was less a breakthrough than a breakdown averted".split()
+
+embeddings_for_test_sentence_1 = vector_encoding_utils.get_word_embeddings_for_test_sentence(external_test_sentence_1)
+embeddings_for_test_sentence_2 = vector_encoding_utils.get_word_embeddings_for_test_sentence(external_test_sentence_2)
+
+print("embeddings_for_test_sentence_1:")
+print(embeddings_for_test_sentence_1)
+print("embeddings_for_test_sentence_2:")
+print(embeddings_for_test_sentence_2)
+
+sentence_embedding_tensor_1 = torch.cat(embeddings_for_test_sentence_1, 0).view(len(embeddings_for_test_sentence_1), 1, -1)
+sentence_embedding_tensor_2 = torch.cat(embeddings_for_test_sentence_2, 0).view(len(embeddings_for_test_sentence_2), 1, -1)
+
+tag_scores_test_1 = ner_tagger(sentence_embedding_tensor_1, sentence_embedding_tensor_1.shape[1])
+tag_scores_test_2 = ner_tagger(sentence_embedding_tensor_2, sentence_embedding_tensor_2.shape[1])
+
+print(tag_scores_test_1)
+print(tag_scores_test_2)
+
+words_with_tags_sentence_1 = []
+words_with_tags_sentence_2 = []
+
+for word_index in range(len(external_test_sentence_1)):
+    word_tag = ner_tags[int(torch.topk(tag_scores_test_1[word_index, 0], 1, dim=0)[1].item())]
+    words_with_tags_sentence_1.append((external_test_sentence_1[word_index], word_tag))
+
+for word_index in range(len(external_test_sentence_2)):
+    word_tag = ner_tags[int(torch.topk(tag_scores_test_2[word_index, 0], 1, dim=0)[1].item())]
+    words_with_tags_sentence_2.append((external_test_sentence_2[word_index], word_tag))
+
+print(words_with_tags_sentence_1)
+print(words_with_tags_sentence_2)
 
 
 

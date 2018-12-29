@@ -29,7 +29,7 @@ def get_fasttext_word_vector(word: str, fasttext) -> CustomTypes.TorchTensor:
         return torch.zeros(300)
 
 
-def get_word_embeddings_for_sentence(sentence: List, fasttext, has_tags: bool=True) -> List[CustomTypes.TorchTensor]:
+def get_word_embeddings_for_sentence(sentence: List, fasttext, has_tags: bool=False) -> List[CustomTypes.TorchTensor]:
     return [get_fasttext_word_vector(word_with_tag[0].lower(), fasttext) for word_with_tag in sentence] if has_tags \
         else [get_fasttext_word_vector(word.lower(), fasttext) for word in sentence]
 
@@ -51,6 +51,7 @@ def get_word_embeddings_for_tagged_sentences(training_sentences_with_tags: List[
         embeddings_lists_for_sentences_in_batch: List = []
         labels_lists_for_sentences_in_batch: List = []
         for tagged_sentence in tagged_sentence_batch_with_labels:
+
             word_embedding_tensors_list = get_word_embeddings_for_sentence([word[0] for word in tagged_sentence], fasttext)
             word_label_tensors_list = [tag_to_tensor_dict[word[label_index_in_tuples]] for word in tagged_sentence]
             # print(len(word_embedding_tensors_list))
