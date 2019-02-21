@@ -49,15 +49,6 @@ xavier_normal_weight_init(bert_qa_module.named_parameters())
 
 training_instances: Iterable[Dict] = SquadReader.read(training_data_file_path)
 
-PASSAGE = Field(lower=True, sequential=False)
-QUESTION = Field(lower=True, sequential=False)
-ANSWER = Field(lower=True, sequential=False)
-SPAN_START = Field(sequential=False, use_vocab=False)
-SPAN_END = Field(sequential=False, use_vocab=False)
-
-lst_fields = [("question", QUESTION), ("passage", PASSAGE), ("answer", ANSWER), ("span_start", SPAN_START), ("span_end", SPAN_END)]
-
-
 answer_start_marker = "π"
 answer_end_marker = "ß"
 
@@ -116,21 +107,9 @@ for squad_qa_instance_as_dict in training_instances:
         print(question_tokens)
         print(squad_qa_instance_as_dict['answer'])
 
-        data_as_lst = [squad_qa_instance_as_dict['question'],
-                       passage_text_for_tokenization,
-                       squad_qa_instance_as_dict['answer'],
-                       span_start_char_index,
-                       span_end_char_index]
-
-        dataset_instances_as_text.append(Example.fromlist(data_as_lst, lst_fields))
-
-# print(len(examples))
-# print(examples)
-
 dataset = SquadDatasetForBert(squad_dataset_list)
 dataloader = DataLoader(dataset, batch_size = BATCH_SIZE, collate_fn = collate_with_padding)
 
-# num_batches = 0
 loss_function = torch.nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(bert_qa_module.parameters(), lr=0.01)
 
@@ -144,7 +123,9 @@ for epoch in range(3):
         answer_start_index_loss = loss_function(bert_model_output[0], data_item[2].unsqueeze(dim = 1))
         answer_end_index_loss = loss_function(bert_model_output[1], data_item[3].unsqueeze(dim = 1))
         total_loss = answer_start_index_loss + answer_end_index_loss
+
         total_loss.backward()
+
         optimizer.step()
 
         print(bert_model_output)
