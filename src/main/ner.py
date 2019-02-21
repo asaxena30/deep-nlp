@@ -1,13 +1,13 @@
 import torch
 from src.util import datasetutils, vector_encoding_utils
 from typing import Dict, Type
-from src.sequence_models.lstmtagger import LSTMTagger
+from src.modules.sequence_modeling.lstmtagger import LSTMTagger
 import torch.optim as optim
 import collections
 from random import shuffle
 import matplotlib.pyplot as plt
 from math import floor, fsum
-from src.data.datasetreaders import Conll2003Reader
+from src.data.dataset.datasetreaders import Conll2003Reader
 
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -60,7 +60,7 @@ shuffle(all_sentence_batches_as_tensor_tuples)
 training_sequence_length = floor(len(all_sentence_batches_as_tensor_tuples) * 0.8)
 training_sentence_batches_as_tensor_tuples = all_sentence_batches_as_tensor_tuples[:training_sequence_length]
 
-for epoch in range(0):
+for epoch in range(4):
     shuffle(training_sentence_batches_as_tensor_tuples)
     for sentence_batch_tensor_with_labels in training_sentence_batches_as_tensor_tuples:
         ner_tagger.zero_grad()

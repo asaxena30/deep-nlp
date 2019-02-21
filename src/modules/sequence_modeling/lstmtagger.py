@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from src.common.standarddlutils import xavier_normal_weight_init
+
+from src.common.neural_net_param_utils import xavier_normal_weight_init
 
 
 class LSTMTagger(nn.Module):

@@ -1,6 +1,42 @@
-from typing import List
-from abc import ABC
+import torch
+from typing import List, Callable, Any
+
+from torch import Tensor
+
 from src.common import CustomTypes
+
+
+
+class Batch:
+
+    def __init__(self, items_as_list: List):
+        super().__init__()
+        self.items: List = items_as_list
+        self.num_items = len(self.items)
+
+    def iterator(self):
+        return BatchIterator(self)
+
+    def get_data_point_at_index(self, index: int):
+        return self.items[index]
+
+    def get_num_items(self):
+        return self.num_items
+
+    def size(self):
+        """ alias for get_num_items"""
+        return self.get_num_items()
+
+    def map(self, mapper: Callable[[List], Any]):
+        return mapper(self.items)
+
+
+class TensorBatch(Batch):
+    def __init__(self, tensor_list: List[Tensor], use_padding):
+        super().__init__(tensor_list)
+
+    def as_tensor(self):
+        return torch.Tensor(self.items)
 
 
 class BatchIterator:
@@ -21,24 +57,6 @@ class BatchIterator:
         return next_data_point
 
 
-class Batch(ABC):
-
-    def __init__(self, items_as_list: List, batch_size: int):
-        self.items: List = items_as_list
-        self.num_items = len(self.items)
-        self.batch_size = batch_size
-        super().__init__()
-
-    def iterator(self):
-        return BatchIterator(self)
-
-    def get_data_point_at_index(self, index: int):
-        return self.items[index]
-
-    def get_num_items(self):
-        return self.num_items
-
-
 class TaggedSentenceBatch(Batch):
-    def __init__(self, items_as_list: List[CustomTypes.TaggedSentence], batch_size: int):
-        super().__init__(items_as_list, batch_size)
+    def __init__(self, items_as_list: List[CustomTypes.TaggedSentence]):
+        super().__init__(items_as_list)

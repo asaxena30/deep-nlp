@@ -1,6 +1,7 @@
+from torch import Tensor
 from torch.utils.data.dataset import Dataset
 from src.data.batch import Batch
-from typing import List
+from typing import List, NamedTuple
 
 
 class BatchedDataset(Dataset):
@@ -21,6 +22,9 @@ class BatchedDataset(Dataset):
     def iterator(self):
         return BatchedDatasetIterator(self)
 
+    def __iter__(self):
+        return BatchedDatasetIterator(self)
+
 
 class LabeledBatchedDataset(BatchedDataset):
     """
@@ -39,11 +43,25 @@ class BatchedDatasetIterator:
         self.dataset = dataset
         self.current_index = 0
 
-    def __iter__(self):
-        return self
-
     def __next__(self):
         if self.current_index > self.dataset.__len__() - 1:
             raise StopIteration
         return self.dataset.__getitem__(self.current_index)
 
+
+class SquadDatasetForBert(Dataset):
+    """
+        instances: a list of tuples such that each tuple is an instance containing
+        tensors for
+            1. (question + passage) tokens Tensor
+            2. segment_ids Tensor
+            2. answer start index and end-index as tensor
+    """
+    def __init__(self, instances: List[NamedTuple]):
+        self.instances = instances
+
+    def __getitem__(self, index):
+        return self.instances[index]
+
+    def __len__(self):
+        return len(self.instances)
