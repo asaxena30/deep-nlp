@@ -1,8 +1,7 @@
-from typing import Iterable, Dict, List, Tuple, NamedTuple
+from typing import List, Tuple, NamedTuple
 from collections import namedtuple
 import torch
 from torch.utils.data.dataloader import DataLoader, default_collate
-from torchtext.data import Field, Example
 
 from src.common.neural_net_param_utils import xavier_normal_weight_init
 from src.data.instance.instance import SquadTensorInstance
@@ -12,15 +11,27 @@ from src.data.dataset.dataset import SquadDatasetForBert
 from src.modules.question_answering_modules import BertQuestionAnsweringModule
 from torch.nn.functional import pad
 
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
 # training_data_file_path: str = "../../data/SQuAD/train-v2.0.json"
+# dev_data_file_path: str = "../../data/SQuAD/dev-v2.0.json"
+
 training_data_file_path: str = "../../data/SQuAD/sample.json"
-dev_data_file_path: str = "../../data/SQuAD/dev-v2.0.json"
+dev_data_file_path: str = "../../data/SQuAD/sample.json"
 
 BATCH_SIZE: int = 32
-BERT_MODEL_SIZE: int = 768
 
 SquadTensorTuple: NamedTuple = namedtuple('SquadTensorTuple', ['token_ids', 'segment_ids', 'answer_start_index',
                                                                'answer_end_index', 'attention_mask'])
+
+
+pretrained_bert_tokenizer = PretrainedBertTokenizer('bert-base-uncased')
+
+answer_start_marker = "π"
+answer_end_marker = "ß"
+
+answer_start_marker_with_spaces: str = " %s " % answer_start_marker
+answer_end_marker_with_spaces: str = " %s " % answer_end_marker
 
 
 def collate_with_padding(batch):
@@ -43,22 +54,11 @@ def collate_with_padding(batch):
     return default_collate(batch_as_tensor_tuples)
 
 
-pretrained_bert_tokenizer = PretrainedBertTokenizer('bert-base-uncased')
-bert_qa_module = BertQuestionAnsweringModule()
-xavier_normal_weight_init(bert_qa_module.named_parameters())
+def get_squad_dataset_from_file(file_path: str) -> SquadDatasetForBert:
+    instances = SquadReader.read(file_path)
+    squad_dataset_list: List = []
 
-training_instances: Iterable[Dict] = SquadReader.read(training_data_file_path)
-
-answer_start_marker = "π"
-answer_end_marker = "ß"
-
-answer_start_marker_with_spaces: str = " %s " % answer_start_marker
-answer_end_marker_with_spaces: str = " %s " % answer_end_marker
-
-squad_dataset_list: List = []
-dataset_instances_as_text: List[Example] = []
-
-for squad_qa_instance_as_dict in training_instances:
+    for squad_qa_instance_as_dict in instances:
         if 'span_start' not in squad_qa_instance_as_dict:
             continue
 
@@ -70,8 +70,9 @@ for squad_qa_instance_as_dict in training_instances:
         # here we are simply inserting answer start and end markers so that after tokenization we can still track
         # the answer boundaries
         passage_text_for_tokenization = passage_text[:span_start_char_index] + answer_start_marker_with_spaces + \
-                       passage_text[span_start_char_index: span_end_char_index] + answer_end_marker_with_spaces + \
-                       passage_text[span_end_char_index:]
+                                        passage_text[
+                                        span_start_char_index: span_end_char_index] + answer_end_marker_with_spaces + \
+                                        passage_text[span_end_char_index:]
 
         passage_tokens = pretrained_bert_tokenizer.tokenize(passage_text_for_tokenization)
         question_tokens = pretrained_bert_tokenizer.tokenize(squad_qa_instance_as_dict['question'])
@@ -94,7 +95,8 @@ for squad_qa_instance_as_dict in training_instances:
         question_token_ids = pretrained_bert_tokenizer.convert_tokens_to_ids(question_tokens)
 
         all_token_ids = passage_token_ids + question_token_ids
-        all_segment_ids = [0 for question_token_id in question_token_ids] + [1 for passage_token_id in passage_token_ids]
+        all_segment_ids = [0 for question_token_id in question_token_ids] + [1 for passage_token_id in
+                                                                             passage_token_ids]
         answer_indices = (answer_span_start_token_index, answer_span_end_token_index)
 
         instance_tensor = SquadTensorInstance(torch.tensor(all_token_ids, dtype = torch.long),
@@ -103,18 +105,28 @@ for squad_qa_instance_as_dict in training_instances:
 
         squad_dataset_list.append(instance_tensor)
 
-        print(passage_tokens)
-        print(question_tokens)
-        print(squad_qa_instance_as_dict['answer'])
+        # print(passage_tokens)
+        # print(question_tokens)
+        # print(squad_qa_instance_as_dict['answer'])
 
-dataset = SquadDatasetForBert(squad_dataset_list)
-dataloader = DataLoader(dataset, batch_size = BATCH_SIZE, collate_fn = collate_with_padding)
+    return SquadDatasetForBert(squad_dataset_list)
+
+
+train_dataset = get_squad_dataset_from_file(training_data_file_path)
+train_dataloader = DataLoader(train_dataset, batch_size = BATCH_SIZE, collate_fn = collate_with_padding)
+
+test_dataset = get_squad_dataset_from_file(dev_data_file_path)
+test_dataloader = DataLoader(test_dataset, batch_size = BATCH_SIZE, collate_fn = collate_with_padding)
+
+bert_qa_module = BertQuestionAnsweringModule(device = device)
+bert_qa_module.to(device)
+xavier_normal_weight_init(bert_qa_module.named_parameters())
 
 loss_function = torch.nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(bert_qa_module.parameters(), lr=0.01)
 
-for epoch in range(3):
-    for data_item in dataloader:
+for epoch in range(0):
+    for data_item in train_dataloader:
         bert_model_output: Tuple[torch.Tensor, torch.Tensor] = bert_qa_module(input_ids = data_item[0], token_type_ids =
             data_item[1], attention_mask = data_item[4], output_all_encoded_layers = False)
 
@@ -133,4 +145,39 @@ for epoch in range(3):
         print(bert_model_output[1].size())
 
 
+# eval mode switches off features such as dropout and batch_norm
 bert_qa_module.eval()
+
+num_correct_start_index_answers: int = 0
+num_correct_end_index_answers: int = 0
+total_answers: int = 0
+
+for data_item in test_dataloader:
+    bert_model_output: Tuple[torch.Tensor, torch.Tensor] = bert_qa_module(input_ids = data_item[0], token_type_ids =
+        data_item[1], attention_mask = data_item[4], output_all_encoded_layers = False)
+
+    answer_start_index_batch_as_matrix = data_item[2].unsqueeze(dim = 1)
+    answer_end_index_batch_as_matrix = data_item[3].unsqueeze(dim = 1)
+
+    answer_start_index_loss = loss_function(bert_model_output[0], answer_start_index_batch_as_matrix)
+    answer_end_index_loss = loss_function(bert_model_output[1], answer_end_index_batch_as_matrix)
+    total_loss = answer_start_index_loss + answer_end_index_loss
+
+    answer_start_indices_chosen_by_model = torch.squeeze(torch.topk(bert_model_output[0], 1, dim = 1)[1])
+    answer_end_indices_chosen_by_model = torch.squeeze(torch.topk(bert_model_output[1], 1, dim = 1)[1])
+
+    print("batch loss: " + str(total_loss))
+    print("answer start indices size: " + str(answer_start_indices_chosen_by_model.size()))
+    print("answer end indices size: " + str(answer_end_indices_chosen_by_model.size()))
+    print(answer_end_indices_chosen_by_model)
+
+    answer_start_index_comparison_tensor = torch.eq(data_item[2], answer_start_indices_chosen_by_model)
+    answer_end_index_comparison_tensor = torch.eq(data_item[3], answer_end_indices_chosen_by_model)
+
+    num_correct_start_index_answers += answer_start_index_comparison_tensor.sum().item()
+    num_correct_end_index_answers += answer_end_index_comparison_tensor.sum().item()
+    total_answers += answer_start_indices_chosen_by_model.size()[0]
+
+print("start index accuracy: " + str(num_correct_start_index_answers / total_answers))
+print("end index accuracy: " + str(num_correct_end_index_answers / total_answers))
+print("total answers: " + str(total_answers))
