@@ -11,7 +11,6 @@ from src.data.dataset.dataset import SquadDatasetForBert
 from src.modules.question_answering_modules import BertQuestionAnsweringModule
 from torch.nn.functional import pad
 
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
 # training_data_file_path: str = "../../data/SQuAD/train-v2.0.json"
 # dev_data_file_path: str = "../../data/SQuAD/dev-v2.0.json"
@@ -19,7 +18,10 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 training_data_file_path: str = "../../data/SQuAD/sample.json"
 dev_data_file_path: str = "../../data/SQuAD/sample.json"
 
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
 BATCH_SIZE: int = 32
+MAX_ALLOWED_BERT_TOKEN_SEQUENCE_LENGTH: int = 512  # max-allowed token sequence length for pretrained-model
 
 SquadTensorTuple: NamedTuple = namedtuple('SquadTensorTuple', ['token_ids', 'segment_ids', 'answer_start_index',
                                                                'answer_end_index', 'attention_mask'])
@@ -46,7 +48,7 @@ def collate_with_padding(batch):
         padding_size = max_length - instance_length
         instance.token_ids = pad(instance.token_ids, (0, padding_size))
         instance.segment_ids = pad(instance.segment_ids, (0, padding_size))
-        instance.attention_mask = torch.Tensor([1] * instance_length + [0] * padding_size)
+        instance.attention_mask = torch.tensor([1] * instance_length + [0] * padding_size, device = device)
         batch_as_tensor_tuples.append(SquadTensorTuple(instance.token_ids, instance.segment_ids, instance.answer_indices[0].item(),
                                                        instance.answer_indices[1].item(),
                                                        instance.attention_mask))
@@ -57,6 +59,7 @@ def collate_with_padding(batch):
 def get_squad_dataset_from_file(file_path: str) -> SquadDatasetForBert:
     instances = SquadReader.read(file_path)
     squad_dataset_list: List = []
+    num_skipped_instances: int = 0
 
     for squad_qa_instance_as_dict in instances:
         if 'span_start' not in squad_qa_instance_as_dict:
@@ -91,17 +94,19 @@ def get_squad_dataset_from_file(file_path: str) -> SquadDatasetForBert:
         # hence -2 as opposed to -1
         answer_span_end_token_index: int = answer_end_marker_index - 2 + len(question_tokens)
 
-        passage_token_ids = pretrained_bert_tokenizer.convert_tokens_to_ids(passage_tokens)
-        question_token_ids = pretrained_bert_tokenizer.convert_tokens_to_ids(question_tokens)
+        all_tokens = passage_tokens + question_tokens
 
-        all_token_ids = passage_token_ids + question_token_ids
-        all_segment_ids = [0 for question_token_id in question_token_ids] + [1 for passage_token_id in
-                                                                             passage_token_ids]
+        if len(all_tokens) > MAX_ALLOWED_BERT_TOKEN_SEQUENCE_LENGTH:
+            num_skipped_instances += 1
+            continue
+
+        all_token_ids = pretrained_bert_tokenizer.convert_tokens_to_ids(all_tokens)
+        all_segment_ids = [0 for question_token in question_tokens] + [1 for passage_token in passage_tokens]
         answer_indices = (answer_span_start_token_index, answer_span_end_token_index)
 
-        instance_tensor = SquadTensorInstance(torch.tensor(all_token_ids, dtype = torch.long),
-                                              torch.tensor(all_segment_ids, dtype = torch.long),
-                                              torch.tensor(answer_indices, dtype = torch.long))
+        instance_tensor = SquadTensorInstance(torch.tensor(all_token_ids, dtype = torch.long, device = device),
+                                              torch.tensor(all_segment_ids, dtype = torch.long, device = device),
+                                              torch.tensor(answer_indices, dtype = torch.long, device = device))
 
         squad_dataset_list.append(instance_tensor)
 
@@ -109,18 +114,20 @@ def get_squad_dataset_from_file(file_path: str) -> SquadDatasetForBert:
         # print(question_tokens)
         # print(squad_qa_instance_as_dict['answer'])
 
-    return SquadDatasetForBert(squad_dataset_list)
+    return SquadDatasetForBert(squad_dataset_list), num_skipped_instances
 
 
-train_dataset = get_squad_dataset_from_file(training_data_file_path)
+train_dataset, num_skipped_training_instances = get_squad_dataset_from_file(training_data_file_path)
 train_dataloader = DataLoader(train_dataset, batch_size = BATCH_SIZE, collate_fn = collate_with_padding)
 
-test_dataset = get_squad_dataset_from_file(dev_data_file_path)
+test_dataset, num_skipped_test_instances = get_squad_dataset_from_file(dev_data_file_path)
 test_dataloader = DataLoader(test_dataset, batch_size = BATCH_SIZE, collate_fn = collate_with_padding)
 
-bert_qa_module = BertQuestionAnsweringModule(device = device)
+print("num skipped training instances: " + str(num_skipped_training_instances))
+print("num skipped test instances: " + str(num_skipped_test_instances))
+
+bert_qa_module = BertQuestionAnsweringModule(device = device, named_param_weight_initializer = xavier_normal_weight_init)
 bert_qa_module.to(device)
-xavier_normal_weight_init(bert_qa_module.named_parameters())
 
 loss_function = torch.nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(bert_qa_module.parameters(), lr=0.01)
