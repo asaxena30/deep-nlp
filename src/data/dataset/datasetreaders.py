@@ -51,7 +51,7 @@ class SquadReader:
                         question_text = question_answer["question"].strip().replace("\n", "")
                         answer_texts = [answer['text'] for answer in question_answer['answers']]
 
-                        # effectively no answers means it's an unanswerable question which isn't supported yet
+                        # effectively, no answers means it's an unanswerable question which isn't supported yet
                         if not answer_texts:
                             continue
 

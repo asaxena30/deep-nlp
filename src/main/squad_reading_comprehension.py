@@ -1,5 +1,6 @@
 from typing import List, Tuple, NamedTuple
 from collections import namedtuple
+from tqdm import tqdm
 import torch
 from torch.utils.data.dataloader import DataLoader, default_collate
 
@@ -10,22 +11,25 @@ from src.data.dataset.datasetreaders import SquadReader
 from src.data.dataset.dataset import SquadDatasetForBert
 from src.modules.question_answering_modules import BertQuestionAnsweringModule
 from torch.nn.functional import pad
+from torch.autograd import Variable
+from torch.utils.checkpoint import checkpoint
 
 
-# training_data_file_path: str = "../../data/SQuAD/train-v2.0.json"
-# dev_data_file_path: str = "../../data/SQuAD/dev-v2.0.json"
+dataset_data_file_path: str = "../../data/SQuAD"
 
-training_data_file_path: str = "../../data/SQuAD/sample.json"
-dev_data_file_path: str = "../../data/SQuAD/sample.json"
+# training_data_file_path: str = dataset_data_file_path + "/train-v2.0.json"
+# dev_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
+
+training_data_file_path: str = dataset_data_file_path + "/sample.json"
+dev_data_file_path: str = dataset_data_file_path + "/sample.json"
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-BATCH_SIZE: int = 32
+BATCH_SIZE: int = 50
 MAX_ALLOWED_BERT_TOKEN_SEQUENCE_LENGTH: int = 512  # max-allowed token sequence length for pretrained-model
 
 SquadTensorTuple: NamedTuple = namedtuple('SquadTensorTuple', ['token_ids', 'segment_ids', 'answer_start_index',
                                                                'answer_end_index', 'attention_mask'])
-
 
 pretrained_bert_tokenizer = PretrainedBertTokenizer('bert-base-uncased')
 
@@ -49,9 +53,10 @@ def collate_with_padding(batch):
         instance.token_ids = pad(instance.token_ids, (0, padding_size))
         instance.segment_ids = pad(instance.segment_ids, (0, padding_size))
         instance.attention_mask = torch.tensor([1] * instance_length + [0] * padding_size, device = device)
-        batch_as_tensor_tuples.append(SquadTensorTuple(instance.token_ids, instance.segment_ids, instance.answer_indices[0].item(),
-                                                       instance.answer_indices[1].item(),
-                                                       instance.attention_mask))
+        batch_as_tensor_tuples.append(
+            SquadTensorTuple(instance.token_ids, instance.segment_ids, instance.answer_indices[0].item(),
+                             instance.answer_indices[1].item(),
+                             instance.attention_mask))
 
     return default_collate(batch_as_tensor_tuples)
 
@@ -94,7 +99,7 @@ def get_squad_dataset_from_file(file_path: str) -> SquadDatasetForBert:
         # hence -2 as opposed to -1
         answer_span_end_token_index: int = answer_end_marker_index - 2 + len(question_tokens)
 
-        all_tokens = passage_tokens + question_tokens
+        all_tokens = question_tokens + passage_tokens
 
         if len(all_tokens) > MAX_ALLOWED_BERT_TOKEN_SEQUENCE_LENGTH:
             num_skipped_instances += 1
@@ -126,31 +131,58 @@ test_dataloader = DataLoader(test_dataset, batch_size = BATCH_SIZE, collate_fn =
 print("num skipped training instances: " + str(num_skipped_training_instances))
 print("num skipped test instances: " + str(num_skipped_test_instances))
 
-bert_qa_module = BertQuestionAnsweringModule(device = device, named_param_weight_initializer = xavier_normal_weight_init)
+bert_qa_module = BertQuestionAnsweringModule(device = device,
+                                             named_param_weight_initializer = xavier_normal_weight_init)
 bert_qa_module.to(device)
 
 loss_function = torch.nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(bert_qa_module.parameters(), lr=0.01)
+optimizer = torch.optim.Adam(bert_qa_module.parameters(), lr = 0.01)
 
-for epoch in range(0):
+batch_num: int = 0
+
+for epoch in tqdm(range(2)):
+    print("inside training loop")
     for data_item in train_dataloader:
-        bert_model_output: Tuple[torch.Tensor, torch.Tensor] = bert_qa_module(input_ids = data_item[0], token_type_ids =
-            data_item[1], attention_mask = data_item[4], output_all_encoded_layers = False)
 
+        answer_start_index_batch_as_matrix = data_item[2].unsqueeze(dim = 1).to(device = device)
+        answer_end_index_batch_as_matrix = data_item[3].unsqueeze(dim = 1).to(device = device)
+
+        # without checkpointing this can be used
+        #         bert_model_output: Tuple[torch.Tensor, torch.Tensor] = bert_qa_module(input_ids = data_item[0], token_type_ids =
+        #             data_item[1], attention_mask = data_item[4], output_all_encoded_layers = False)
+
+        # Note that pytorch's checkpoint method does not imply the traditional meaning of checkpointing
+        # (which generally indicates saving a model/process to be resumed later). Instead, it's a
+        # process to avoid memory consumption (caused by reverse mode auto-differentiation) at the cost of performance.
+        # More here: https://pytorch.org/docs/stable/checkpoint.html
+        # checkpointing was simply added to ensure the model can run on a cpu or low-cost GPUs, else
+        # the BERT transformer makes a 12 GB Tesla K80 run out of memory. If you'd like to disable it, you could
+        # alternatively use the commented out counterpart which directly calls the bert_qa_module
+        bert_model_output: Tuple[torch.Tensor, torch.Tensor] = checkpoint(bert_qa_module, data_item[0],
+                                                                          data_item[1], data_item[4])
+
+        print("output calculation done for batch#: " + str(batch_num))
+        batch_num += 1
         bert_qa_module.zero_grad()
 
-        answer_start_index_loss = loss_function(bert_model_output[0], data_item[2].unsqueeze(dim = 1))
-        answer_end_index_loss = loss_function(bert_model_output[1], data_item[3].unsqueeze(dim = 1))
-        total_loss = answer_start_index_loss + answer_end_index_loss
+        answer_start_index_loss = loss_function(bert_model_output[0], answer_start_index_batch_as_matrix)
+        answer_end_index_loss = loss_function(bert_model_output[1], answer_end_index_batch_as_matrix)
 
+        # without checkpointing this can be used
+        # total_loss = answer_start_index_loss + answer_end_index_loss
+
+        # wrapping the loss as a variable. This is generally not required but since we're using checkpointing above,
+        # which simply avoids calculating intermediate values at the cost of recalculating them in the backward pass.
+        # Since the backward starts at the loss and there're no gradient functions yet, we need the loss to require
+        # grad
+        total_loss = Variable(answer_start_index_loss + answer_end_index_loss, requires_grad = True)
         total_loss.backward()
 
         optimizer.step()
 
-        print(bert_model_output)
-        print(bert_model_output[0].size())
-        print(bert_model_output[1].size())
-
+        #         print(bert_model_output)
+        #         print(bert_model_output[0].size())
+        #         print(bert_model_output[1].size())
 
 # eval mode switches off features such as dropout and batch_norm
 bert_qa_module.eval()
@@ -159,31 +191,34 @@ num_correct_start_index_answers: int = 0
 num_correct_end_index_answers: int = 0
 total_answers: int = 0
 
-for data_item in test_dataloader:
-    bert_model_output: Tuple[torch.Tensor, torch.Tensor] = bert_qa_module(input_ids = data_item[0], token_type_ids =
+with torch.no_grad():
+    for data_item in test_dataloader:
+        bert_model_output: Tuple[torch.Tensor, torch.Tensor] = bert_qa_module(input_ids = data_item[0], token_type_ids =
         data_item[1], attention_mask = data_item[4], output_all_encoded_layers = False)
 
-    answer_start_index_batch_as_matrix = data_item[2].unsqueeze(dim = 1)
-    answer_end_index_batch_as_matrix = data_item[3].unsqueeze(dim = 1)
+        answer_start_index_batch_as_matrix = data_item[2].unsqueeze(dim = 1).to(device = device)
+        answer_end_index_batch_as_matrix = data_item[3].unsqueeze(dim = 1).to(device = device)
 
-    answer_start_index_loss = loss_function(bert_model_output[0], answer_start_index_batch_as_matrix)
-    answer_end_index_loss = loss_function(bert_model_output[1], answer_end_index_batch_as_matrix)
-    total_loss = answer_start_index_loss + answer_end_index_loss
+        answer_start_index_loss = loss_function(bert_model_output[0], answer_start_index_batch_as_matrix)
+        answer_end_index_loss = loss_function(bert_model_output[1], answer_end_index_batch_as_matrix)
+        total_loss = answer_start_index_loss + answer_end_index_loss
 
-    answer_start_indices_chosen_by_model = torch.squeeze(torch.topk(bert_model_output[0], 1, dim = 1)[1])
-    answer_end_indices_chosen_by_model = torch.squeeze(torch.topk(bert_model_output[1], 1, dim = 1)[1])
+        answer_start_indices_chosen_by_model = torch.squeeze(torch.topk(bert_model_output[0], 1, dim = 1)[1])
+        answer_end_indices_chosen_by_model = torch.squeeze(torch.topk(bert_model_output[1], 1, dim = 1)[1])
 
-    print("batch loss: " + str(total_loss))
-    print("answer start indices size: " + str(answer_start_indices_chosen_by_model.size()))
-    print("answer end indices size: " + str(answer_end_indices_chosen_by_model.size()))
-    print(answer_end_indices_chosen_by_model)
+        print("batch loss: " + str(total_loss))
+        print("answer start indices size: " + str(answer_start_indices_chosen_by_model.size()))
+        print("answer end indices size: " + str(answer_end_indices_chosen_by_model.size()))
+        print(answer_end_indices_chosen_by_model)
 
-    answer_start_index_comparison_tensor = torch.eq(data_item[2], answer_start_indices_chosen_by_model)
-    answer_end_index_comparison_tensor = torch.eq(data_item[3], answer_end_indices_chosen_by_model)
+        answer_start_index_comparison_tensor = torch.eq(answer_start_index_batch_as_matrix,
+                                                        answer_start_indices_chosen_by_model)
+        answer_end_index_comparison_tensor = torch.eq(answer_end_index_batch_as_matrix,
+                                                      answer_end_indices_chosen_by_model)
 
-    num_correct_start_index_answers += answer_start_index_comparison_tensor.sum().item()
-    num_correct_end_index_answers += answer_end_index_comparison_tensor.sum().item()
-    total_answers += answer_start_indices_chosen_by_model.size()[0]
+        num_correct_start_index_answers += answer_start_index_comparison_tensor.sum().item()
+        num_correct_end_index_answers += answer_end_index_comparison_tensor.sum().item()
+        total_answers += answer_start_indices_chosen_by_model.size()[0]
 
 print("start index accuracy: " + str(num_correct_start_index_answers / total_answers))
 print("end index accuracy: " + str(num_correct_end_index_answers / total_answers))
