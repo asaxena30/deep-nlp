@@ -1,6 +1,12 @@
 # deep-nlp
 
-As of now contains 2 implementations(refer to src/main:
+Prerequisites:
+
+1. Python 3.6+
+2. Pytorch 0.4+
+3. Matplotlib
+
+As of now contains 2 implementations(refer to src/main):
 
 1. Reading comprehension using a pretrained bert model on the SQUAD data-set (Details and running instructions TBA). Needs Squad V1.1 (or 2.0 but unanswered questions are not supported yet) and pytorch-pretrained-bert (https://github.com/huggingface/pytorch-pretrained-BERT). Note that this uses pytorch's checkpointing feature right now (https://pytorch.org/docs/stable/checkpoint.html) to prevent out-of-memory errors on entry-level GPUs
 2. Named Entity Recognition on CoNLL 2003 Data. 
