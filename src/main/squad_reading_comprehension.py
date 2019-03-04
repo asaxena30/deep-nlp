@@ -13,6 +13,7 @@ from src.modules.question_answering_modules import BertQuestionAnsweringModule
 from torch.nn.functional import pad
 from torch.autograd import Variable
 from torch.utils.checkpoint import checkpoint
+from pytorch_pretrained_bert.optimization import BertAdam
 
 
 dataset_data_file_path: str = "../../data/SQuAD"
@@ -22,6 +23,8 @@ dataset_data_file_path: str = "../../data/SQuAD"
 
 training_data_file_path: str = dataset_data_file_path + "/sample.json"
 dev_data_file_path: str = dataset_data_file_path + "/sample.json"
+
+use_checkpointing = True
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -135,8 +138,13 @@ bert_qa_module = BertQuestionAnsweringModule(device = device,
                                              named_param_weight_initializer = xavier_normal_weight_init)
 bert_qa_module.to(device)
 
+if use_checkpointing:
+    # refer to https://github.com/prigoyal/pytorch_memonger/blob/master/tutorial/Checkpointing_for_PyTorch_models.ipynb
+    # dropout is not recommended while using checkpointing
+    bert_qa_module.bert_model.config.attention_probs_dropout_prob = 0
+
 loss_function = torch.nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(bert_qa_module.parameters(), lr = 0.01)
+optimizer = BertAdam(bert_qa_module.parameters(), lr = 0.01)
 
 batch_num: int = 0
 
@@ -144,12 +152,21 @@ for epoch in tqdm(range(2)):
     print("inside training loop")
     for data_item in train_dataloader:
 
+        bert_qa_module.zero_grad()
+
         answer_start_index_batch_as_matrix = data_item[2].unsqueeze(dim = 1).to(device = device)
         answer_end_index_batch_as_matrix = data_item[3].unsqueeze(dim = 1).to(device = device)
 
         # without checkpointing this can be used
-        #         bert_model_output: Tuple[torch.Tensor, torch.Tensor] = bert_qa_module(input_ids = data_item[0], token_type_ids =
-        #             data_item[1], attention_mask = data_item[4], output_all_encoded_layers = False)
+
+        if use_checkpointing:
+            bert_model_output: Tuple[torch.Tensor, torch.Tensor] = checkpoint(bert_qa_module, data_item[0],
+                                                                              data_item[1], data_item[4])
+        else:
+            bert_model_output: Tuple[torch.Tensor, torch.Tensor] = bert_qa_module(input_ids = data_item[0],
+                                                                                  token_type_ids = data_item[1],
+                                                                                  attention_mask = data_item[4],
+                                                                                  output_all_encoded_layers = False)
 
         # Note that pytorch's checkpoint method does not imply the traditional meaning of checkpointing
         # (which generally indicates saving a model/process to be resumed later). Instead, it's a
@@ -158,12 +175,9 @@ for epoch in tqdm(range(2)):
         # checkpointing was simply added to ensure the model can run on a cpu or low-cost GPUs, else
         # the BERT transformer makes a 12 GB Tesla K80 run out of memory. If you'd like to disable it, you could
         # alternatively use the commented out counterpart which directly calls the bert_qa_module
-        bert_model_output: Tuple[torch.Tensor, torch.Tensor] = checkpoint(bert_qa_module, data_item[0],
-                                                                          data_item[1], data_item[4])
 
-        print("output calculation done for batch#: " + str(batch_num))
+
         batch_num += 1
-        bert_qa_module.zero_grad()
 
         answer_start_index_loss = loss_function(bert_model_output[0], answer_start_index_batch_as_matrix)
         answer_end_index_loss = loss_function(bert_model_output[1], answer_end_index_batch_as_matrix)
@@ -178,7 +192,12 @@ for epoch in tqdm(range(2)):
         total_loss = Variable(answer_start_index_loss + answer_end_index_loss, requires_grad = True)
         total_loss.backward()
 
+        if batch_num % 100 == 0:
+            print("output calculation done for batch#: " + str(batch_num))
+            print("total loss: " + str(total_loss.data.item()))
+
         optimizer.step()
+
 
         #         print(bert_model_output)
         #         print(bert_model_output[0].size())
