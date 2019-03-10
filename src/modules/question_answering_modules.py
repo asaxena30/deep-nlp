@@ -26,7 +26,8 @@ class BertQuestionAnsweringModule(Module):
             named_param_weight_initializer(self.linear_layer_for_answer_start_index.named_parameters())
             named_param_weight_initializer(self.linear_layer_for_answer_end_index.named_parameters())
 
-    def forward(self, input_ids, token_type_ids, attention_mask, output_all_encoded_layers = False):
+    def forward(self, input_ids, token_type_ids, attention_mask, dummy_checkpointing_variable = None,
+                output_all_encoded_layers = False):
         bert_model_output: torch.Tensor = self.bert_model(input_ids = input_ids, token_type_ids = token_type_ids,
                                                           attention_mask = attention_mask,
                                                           output_all_encoded_layers = output_all_encoded_layers)

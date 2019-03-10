@@ -11,7 +11,6 @@ from src.data.dataset.datasetreaders import SquadReader
 from src.data.dataset.dataset import SquadDatasetForBert
 from src.modules.question_answering_modules import BertQuestionAnsweringModule
 from torch.nn.functional import pad
-from torch.autograd import Variable
 from torch.utils.checkpoint import checkpoint
 from pytorch_pretrained_bert.optimization import BertAdam
 
@@ -24,12 +23,26 @@ dataset_data_file_path: str = "../../data/SQuAD"
 training_data_file_path: str = dataset_data_file_path + "/sample.json"
 dev_data_file_path: str = dataset_data_file_path + "/sample.json"
 
-use_checkpointing = True
+
+# the number of epochs to train the model for
+NUM_EPOCHS: int = 2
+
+# batch size to use for training. The default can be kept small when using gradient accumulation. However, if
+# use_gradient_accumulation were to be False, it's best to use a reasonably large batch size
+BATCH_SIZE: int = 5
+
+# max-allowed token sequence length for pretrained-model
+MAX_ALLOWED_BERT_TOKEN_SEQUENCE_LENGTH: int = 512
+
+use_checkpointing: bool = True
+use_gradient_accumulation: bool = True
+
+# num of gradient accumulation steps. Will have no effect if use_gradient_accumulation is false
+NUM_GRADIENT_ACCUMULATION_STEPS: int = 10
+
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-BATCH_SIZE: int = 50
-MAX_ALLOWED_BERT_TOKEN_SEQUENCE_LENGTH: int = 512  # max-allowed token sequence length for pretrained-model
 
 SquadTensorTuple: NamedTuple = namedtuple('SquadTensorTuple', ['token_ids', 'segment_ids', 'answer_start_index',
                                                                'answer_end_index', 'attention_mask'])
@@ -138,6 +151,10 @@ bert_qa_module = BertQuestionAnsweringModule(device = device,
                                              named_param_weight_initializer = xavier_normal_weight_init)
 bert_qa_module.to(device)
 
+# this makes sure checkpointing still calculates gradients,
+# refer to https://discuss.pytorch.org/t/checkpoint-with-no-grad-requiring-inputs-problem/19117/11
+unused_tensor = torch.zeros((2, 2), requires_grad = True).to(device)
+
 if use_checkpointing:
     # refer to https://github.com/prigoyal/pytorch_memonger/blob/master/tutorial/Checkpointing_for_PyTorch_models.ipynb
     # dropout is not recommended while using checkpointing
@@ -148,20 +165,16 @@ optimizer = BertAdam(bert_qa_module.parameters(), lr = 0.01)
 
 batch_num: int = 0
 
-for epoch in tqdm(range(2)):
+for epoch in tqdm(range(NUM_EPOCHS)):
     print("inside training loop")
     for data_item in train_dataloader:
-
-        bert_qa_module.zero_grad()
 
         answer_start_index_batch_as_matrix = data_item[2].unsqueeze(dim = 1).to(device = device)
         answer_end_index_batch_as_matrix = data_item[3].unsqueeze(dim = 1).to(device = device)
 
-        # without checkpointing this can be used
-
         if use_checkpointing:
             bert_model_output: Tuple[torch.Tensor, torch.Tensor] = checkpoint(bert_qa_module, data_item[0],
-                                                                              data_item[1], data_item[4])
+                                                                              data_item[1], data_item[4], unused_tensor)
         else:
             bert_model_output: Tuple[torch.Tensor, torch.Tensor] = bert_qa_module(input_ids = data_item[0],
                                                                                   token_type_ids = data_item[1],
@@ -176,28 +189,25 @@ for epoch in tqdm(range(2)):
         # the BERT transformer makes a 12 GB Tesla K80 run out of memory. If you'd like to disable it, you could
         # alternatively use the commented out counterpart which directly calls the bert_qa_module
 
-
         batch_num += 1
 
         answer_start_index_loss = loss_function(bert_model_output[0], answer_start_index_batch_as_matrix)
         answer_end_index_loss = loss_function(bert_model_output[1], answer_end_index_batch_as_matrix)
 
-        # without checkpointing this can be used
-        # total_loss = answer_start_index_loss + answer_end_index_loss
+        total_loss = answer_start_index_loss + answer_end_index_loss
 
-        # wrapping the loss as a variable. This is generally not required but since we're using checkpointing above,
-        # which simply avoids calculating intermediate values at the cost of recalculating them in the backward pass.
-        # Since the backward starts at the loss and there're no gradient functions yet, we need the loss to require
-        # grad
-        total_loss = Variable(answer_start_index_loss + answer_end_index_loss, requires_grad = True)
+        if use_gradient_accumulation:
+            total_loss = total_loss / NUM_GRADIENT_ACCUMULATION_STEPS
+
         total_loss.backward()
+
+        if not use_gradient_accumulation or batch_num % NUM_GRADIENT_ACCUMULATION_STEPS == 0:
+            optimizer.step()
+            bert_qa_module.zero_grad()
 
         if batch_num % 100 == 0:
             print("output calculation done for batch#: " + str(batch_num))
             print("total loss: " + str(total_loss.data.item()))
-
-        optimizer.step()
-
 
         #         print(bert_model_output)
         #         print(bert_model_output[0].size())
