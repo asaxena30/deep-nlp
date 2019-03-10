@@ -4,7 +4,7 @@ from tqdm import tqdm
 import torch
 from torch.utils.data.dataloader import DataLoader, default_collate
 
-from src.common.neural_net_param_utils import xavier_normal_weight_init
+from src.common.neural_net_param_utils import normal_weight_init, print_gradients
 from src.data.instance.instance import SquadTensorInstance
 from src.tokenization.pretrained_bert_tokenizer import PretrainedBertTokenizer
 from src.data.dataset.datasetreaders import SquadReader
@@ -34,7 +34,7 @@ BATCH_SIZE: int = 5
 # max-allowed token sequence length for pretrained-model
 MAX_ALLOWED_BERT_TOKEN_SEQUENCE_LENGTH: int = 512
 
-use_checkpointing: bool = True
+use_checkpointing: bool = False
 use_gradient_accumulation: bool = True
 
 # num of gradient accumulation steps. Will have no effect if use_gradient_accumulation is false
@@ -148,8 +148,11 @@ print("num skipped training instances: " + str(num_skipped_training_instances))
 print("num skipped test instances: " + str(num_skipped_test_instances))
 
 bert_qa_module = BertQuestionAnsweringModule(device = device,
-                                             named_param_weight_initializer = xavier_normal_weight_init)
+                                             named_param_weight_initializer = normal_weight_init)
+
 bert_qa_module.to(device)
+
+print("num named parameters: " + str(len([p for n, p in bert_qa_module.named_parameters()])))
 
 # this makes sure checkpointing still calculates gradients,
 # refer to https://discuss.pytorch.org/t/checkpoint-with-no-grad-requiring-inputs-problem/19117/11
@@ -157,8 +160,10 @@ unused_tensor = torch.zeros((2, 2), requires_grad = True).to(device)
 
 if use_checkpointing:
     # refer to https://github.com/prigoyal/pytorch_memonger/blob/master/tutorial/Checkpointing_for_PyTorch_models.ipynb
-    # dropout is not recommended while using checkpointing
+    # dropout is not recommended while using checkpointing.
+    # Note that BERT also uses layer-norm internally. So far, disabling that hasn't been tried in checkpointing mode
     bert_qa_module.bert_model.config.attention_probs_dropout_prob = 0
+    bert_qa_module.bert_model.config.hidden_dropout_prob = 0
 
 loss_function = torch.nn.CrossEntropyLoss()
 optimizer = BertAdam(bert_qa_module.parameters(), lr = 0.01)
@@ -172,6 +177,13 @@ for epoch in tqdm(range(NUM_EPOCHS)):
         answer_start_index_batch_as_matrix = data_item[2].unsqueeze(dim = 1).to(device = device)
         answer_end_index_batch_as_matrix = data_item[3].unsqueeze(dim = 1).to(device = device)
 
+        # Note that pytorch's checkpoint method does not imply the traditional meaning of checkpointing
+        # (which generally indicates saving a model/process to be resumed later). Instead, it's a
+        # process to avoid memory consumption (caused by reverse mode auto-differentiation) at the cost of performance.
+        # More here: https://pytorch.org/docs/stable/checkpoint.html
+        # checkpointing was simply added to ensure the model can run on a cpu or low-cost GPUs, else
+        # the BERT transformer makes a 12 GB Tesla K80 run out of memory.
+
         if use_checkpointing:
             bert_model_output: Tuple[torch.Tensor, torch.Tensor] = checkpoint(bert_qa_module, data_item[0],
                                                                               data_item[1], data_item[4], unused_tensor)
@@ -180,14 +192,6 @@ for epoch in tqdm(range(NUM_EPOCHS)):
                                                                                   token_type_ids = data_item[1],
                                                                                   attention_mask = data_item[4],
                                                                                   output_all_encoded_layers = False)
-
-        # Note that pytorch's checkpoint method does not imply the traditional meaning of checkpointing
-        # (which generally indicates saving a model/process to be resumed later). Instead, it's a
-        # process to avoid memory consumption (caused by reverse mode auto-differentiation) at the cost of performance.
-        # More here: https://pytorch.org/docs/stable/checkpoint.html
-        # checkpointing was simply added to ensure the model can run on a cpu or low-cost GPUs, else
-        # the BERT transformer makes a 12 GB Tesla K80 run out of memory. If you'd like to disable it, you could
-        # alternatively use the commented out counterpart which directly calls the bert_qa_module
 
         batch_num += 1
 
@@ -201,17 +205,19 @@ for epoch in tqdm(range(NUM_EPOCHS)):
 
         total_loss.backward()
 
+        if batch_num % 100 == 0:
+            print("output calculation done for batch#: " + str(batch_num))
+            print("total loss: " + str(total_loss.data.item()))
+            print_gradients(bert_qa_module.named_parameters())
+
         if not use_gradient_accumulation or batch_num % NUM_GRADIENT_ACCUMULATION_STEPS == 0:
             optimizer.step()
             bert_qa_module.zero_grad()
 
-        if batch_num % 100 == 0:
-            print("output calculation done for batch#: " + str(batch_num))
-            print("total loss: " + str(total_loss.data.item()))
-
         #         print(bert_model_output)
         #         print(bert_model_output[0].size())
         #         print(bert_model_output[1].size())
+
 
 # eval mode switches off features such as dropout and batch_norm
 bert_qa_module.eval()
