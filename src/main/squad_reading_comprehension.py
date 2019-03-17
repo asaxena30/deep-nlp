@@ -168,8 +168,6 @@ if use_checkpointing:
     bert_qa_module.bert_model.config.hidden_dropout_prob = 0
 
 loss_function = torch.nn.CrossEntropyLoss()
-# aux_loss_function = torch.nn.MSELoss()
-aux_loss_function = torch.nn.SmoothL1Loss()
 
 num_train_iterations = NUM_EPOCHS * math.ceil(len(train_dataset) / BATCH_SIZE)
 optimizer = BertAdam(bert_qa_module.parameters(), lr = 5e-5, warmup = 0.1, t_total = num_train_iterations)
@@ -205,23 +203,11 @@ for epoch in tqdm(range(NUM_EPOCHS)):
         answer_end_indices_chosen_by_model = torch.squeeze(torch.topk(bert_model_output[1], 1, dim = 1)[1])
 
         # start index loss
-        aux_loss_for_start_index = aux_loss_function(answer_start_indices_chosen_by_model.float(),
-                                      answer_start_index_batch_as_matrix.float())
-        loss_for_start_index = loss_function(bert_model_output[0], answer_start_index_batch_as_matrix)
-
-        # answer_start_index_loss = loss_for_start_index + torch.clamp(aux_loss_for_start_index,
-        #                                                              max = loss_for_start_index.item())
-
-        answer_start_index_loss = loss_for_start_index
+        answer_start_index_loss = loss_function(bert_model_output[0], answer_start_index_batch_as_matrix)
 
         # answer end-index loss
-        aux_loss_for_end_index = aux_loss_function(answer_end_indices_chosen_by_model.float(),
-                                      answer_end_index_batch_as_matrix.float())
-        loss_for_end_index = loss_function(bert_model_output[1], answer_end_index_batch_as_matrix)
+        answer_end_index_loss = loss_function(bert_model_output[1], answer_end_index_batch_as_matrix)
 
-        # answer_end_index_loss = loss_for_end_index + torch.clamp(aux_loss_for_end_index, max = loss_for_end_index.item())
-
-        answer_end_index_loss = loss_for_end_index
         total_loss = answer_start_index_loss + answer_end_index_loss
 
         if use_gradient_accumulation:
