@@ -14,8 +14,10 @@ As of now contains 2 implementations(refer to src/main):
 
 Both have been tried on a CPU and Tesla K80/Tesla V100. #1 will take a lot longer than #2 as the BERT transformer is a huge model. Both will default to using a cuda gpu if one is available. This can be changed through a single line of code in each src/main script.
 
-The src/main srcipts will most likely need some changes if you intend to run them locally.
+The src/main scripts will most likely need some changes if you intend to run them locally.
 
 Still a WIP. I'll be adding refinements on a regular basis
 
-Some issues I intend to tackle in the upcoming check-ins: TBA
+Some issues I intend to tackle in the upcoming check-ins: 
+
+1. Use a composite loss function to avoid gradient decay

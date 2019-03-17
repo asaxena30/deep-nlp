@@ -1,5 +1,7 @@
+import math
 from typing import List, Tuple, NamedTuple
 from collections import namedtuple
+
 from tqdm import tqdm
 import torch
 from torch.utils.data.dataloader import DataLoader, default_collate
@@ -9,7 +11,7 @@ from src.data.instance.instance import SquadTensorInstance
 from src.tokenization.pretrained_bert_tokenizer import PretrainedBertTokenizer
 from src.data.dataset.datasetreaders import SquadReader
 from src.data.dataset.dataset import SquadDatasetForBert
-from src.modules.question_answering_modules import BertQuestionAnsweringModule
+from src.modules.question_answering_modules import BertQuestionAnsweringModule, BertQuestionAnsweringModuleSimplified
 from torch.nn.functional import pad
 from torch.utils.checkpoint import checkpoint
 from pytorch_pretrained_bert.optimization import BertAdam
@@ -29,7 +31,7 @@ NUM_EPOCHS: int = 2
 
 # batch size to use for training. The default can be kept small when using gradient accumulation. However, if
 # use_gradient_accumulation were to be False, it's best to use a reasonably large batch size
-BATCH_SIZE: int = 5
+BATCH_SIZE: int = 3
 
 # max-allowed token sequence length for pretrained-model
 MAX_ALLOWED_BERT_TOKEN_SEQUENCE_LENGTH: int = 512
@@ -147,7 +149,7 @@ test_dataloader = DataLoader(test_dataset, batch_size = BATCH_SIZE, collate_fn =
 print("num skipped training instances: " + str(num_skipped_training_instances))
 print("num skipped test instances: " + str(num_skipped_test_instances))
 
-bert_qa_module = BertQuestionAnsweringModule(device = device,
+bert_qa_module = BertQuestionAnsweringModuleSimplified(device = device,
                                              named_param_weight_initializer = normal_weight_init)
 
 bert_qa_module.to(device)
@@ -166,7 +168,11 @@ if use_checkpointing:
     bert_qa_module.bert_model.config.hidden_dropout_prob = 0
 
 loss_function = torch.nn.CrossEntropyLoss()
-optimizer = BertAdam(bert_qa_module.parameters(), lr = 0.01)
+# aux_loss_function = torch.nn.MSELoss()
+aux_loss_function = torch.nn.SmoothL1Loss()
+
+num_train_iterations = NUM_EPOCHS * math.ceil(len(train_dataset) / BATCH_SIZE)
+optimizer = BertAdam(bert_qa_module.parameters(), lr = 5e-5, warmup = 0.1, t_total = num_train_iterations)
 
 batch_num: int = 0
 
@@ -195,9 +201,27 @@ for epoch in tqdm(range(NUM_EPOCHS)):
 
         batch_num += 1
 
-        answer_start_index_loss = loss_function(bert_model_output[0], answer_start_index_batch_as_matrix)
-        answer_end_index_loss = loss_function(bert_model_output[1], answer_end_index_batch_as_matrix)
+        answer_start_indices_chosen_by_model = torch.squeeze(torch.topk(bert_model_output[0], 1, dim = 1)[1])
+        answer_end_indices_chosen_by_model = torch.squeeze(torch.topk(bert_model_output[1], 1, dim = 1)[1])
 
+        # start index loss
+        aux_loss_for_start_index = aux_loss_function(answer_start_indices_chosen_by_model.float(),
+                                      answer_start_index_batch_as_matrix.float())
+        loss_for_start_index = loss_function(bert_model_output[0], answer_start_index_batch_as_matrix)
+
+        # answer_start_index_loss = loss_for_start_index + torch.clamp(aux_loss_for_start_index,
+        #                                                              max = loss_for_start_index.item())
+
+        answer_start_index_loss = loss_for_start_index
+
+        # answer end-index loss
+        aux_loss_for_end_index = aux_loss_function(answer_end_indices_chosen_by_model.float(),
+                                      answer_end_index_batch_as_matrix.float())
+        loss_for_end_index = loss_function(bert_model_output[1], answer_end_index_batch_as_matrix)
+
+        # answer_end_index_loss = loss_for_end_index + torch.clamp(aux_loss_for_end_index, max = loss_for_end_index.item())
+
+        answer_end_index_loss = loss_for_end_index
         total_loss = answer_start_index_loss + answer_end_index_loss
 
         if use_gradient_accumulation:
@@ -205,7 +229,7 @@ for epoch in tqdm(range(NUM_EPOCHS)):
 
         total_loss.backward()
 
-        if batch_num % 100 == 0:
+        if batch_num % 10 == 0:
             print("output calculation done for batch#: " + str(batch_num))
             print("total loss: " + str(total_loss.data.item()))
             print_gradients(bert_qa_module.named_parameters())
@@ -253,7 +277,8 @@ with torch.no_grad():
 
         num_correct_start_index_answers += answer_start_index_comparison_tensor.sum().item()
         num_correct_end_index_answers += answer_end_index_comparison_tensor.sum().item()
-        total_answers += answer_start_indices_chosen_by_model.size()[0]
+        total_answers += (answer_start_indices_chosen_by_model.size()[0] if
+                          answer_start_indices_chosen_by_model.dim() > 0 else 1)
 
 print("start index accuracy: " + str(num_correct_start_index_answers / total_answers))
 print("end index accuracy: " + str(num_correct_end_index_answers / total_answers))
