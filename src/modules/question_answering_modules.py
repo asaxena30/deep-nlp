@@ -59,10 +59,10 @@ class BertQuestionAnsweringModule(Module):
         # start_index_probabilities_tensor = self.softmax(self.linear_layer_for_answer_start_index(lstm_output[0]))
         # end_index_probabilities_tensor = self.softmax(self.linear_layer_for_answer_end_index(lstm_output[0]))
 
-        start_index_probabilities_tensor = self.linear_layer_for_answer_start_index(lstm_output[0])
-        end_index_probabilities_tensor = self.linear_layer_for_answer_end_index(lstm_output[0])
+        start_index_scores_tensor = self.linear_layer_for_answer_start_index(lstm_output[0])
+        end_index_scores_tensor = self.linear_layer_for_answer_end_index(lstm_output[0])
 
-        return start_index_probabilities_tensor, end_index_probabilities_tensor
+        return start_index_scores_tensor, end_index_scores_tensor
 
     def __resolve_bert_model_size(self):
         return BERT_BASE_HIDDEN_SIZE if self.bert_model_name.startswith('bert-base') else BERT_LARGE_HIDDEN_SIZE
@@ -108,11 +108,14 @@ class BertQuestionAnsweringModuleSimplified(Module):
             bert_model_output: torch.Tensor = self.bert_model(input_ids = input_ids, token_type_ids = token_type_ids,
                                                               attention_mask = attention_mask,
                                                               output_all_encoded_layers = output_all_encoded_layers)
+        #
+        # start_index_probabilities_tensor = self.softmax(self.linear_layer_for_answer_start_index(bert_model_output[0]))
+        # end_index_probabilities_tensor = self.softmax(self.linear_layer_for_answer_end_index(bert_model_output[0]))
 
-        start_index_probabilities_tensor = self.softmax(self.linear_layer_for_answer_start_index(bert_model_output[0]))
-        end_index_probabilities_tensor = self.softmax(self.linear_layer_for_answer_end_index(bert_model_output[0]))
+        start_index_scores_tensor = self.linear_layer_for_answer_start_index(bert_model_output[0])
+        end_index_scores_tensor = self.linear_layer_for_answer_end_index(bert_model_output[0])
 
-        return start_index_probabilities_tensor, end_index_probabilities_tensor
+        return start_index_scores_tensor, end_index_scores_tensor
 
     def __resolve_bert_model_size(self):
         return BERT_BASE_HIDDEN_SIZE if self.bert_model_name.startswith('bert-base') else BERT_LARGE_HIDDEN_SIZE

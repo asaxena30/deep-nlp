@@ -8,16 +8,20 @@ Prerequisites:
 
 As of now contains 2 implementations(refer to src/main):
 
-1. Reading comprehension using a pretrained BERT model on the SQUAD (https://rajpurkar.github.io/SQuAD-explorer/) dataset (Details and running instructions TBA). Needs Squad V1.1 (or 2.0 but unanswered questions are not supported yet and will be skipped) and pytorch-pretrained-bert (https://github.com/huggingface/pytorch-pretrained-BERT). Note that this uses pytorch's checkpointing feature right now (https://pytorch.org/docs/stable/checkpoint.html) to prevent out-of-memory errors on entry-level GPUs.
-2. Named Entity Recognition on CoNLL 2003 Data. 
+1. Reading comprehension using a pretrained BERT model on the SQUAD (https://rajpurkar.github.io/SQuAD-explorer/) 1.1 dataset (Basically SQuAD 2.0 with unanswerable questions removed, details and running instructions TBA). Needs Squad V1.1 (or 2.0 but unanswered questions are not supported yet and will be skipped) and pytorch-pretrained-bert (https://github.com/huggingface/pytorch-pretrained-BERT). Note that this uses pytorch's gradient accumulation feature right now to prevent out-of-memory errors on entry-level GPUs. Also has an option to enable checkpointing (https://pytorch.org/docs/stable/checkpoint.html) but I had some trouble with it so have left it disabled by default and have chosen to rely solely on gradient accumulation instead. I was able to get start-index accuracy of 68.5% and end-index accuracy of 71.5% with this implementation. I haven't tried replicating exactly what Google did with their implementation except for a few things such as using BertAdam with learning-rate warmup and taking some cues from the Pytorch port.
+I've included a custom SQuAD reader in datasetreaders.py which can be modified to support SQuAD 2.0 as well.
+If you intend to run squad_Reading_comprehension.py locally, make sure the training_data_file_path and dev_data_file_path point to the actual SQuAD dataset files obtainable from https://rajpurkar.github.io/SQuAD-explorer/. I chose to not include them in this repo due to their size so currently, the noted variables point to a sample file which I've been using locally for quickly debugging the script.
+That said though, it's generally not a great idea to run this script with the actual dataset and/or a large batch size without access to a GPU. My results were obtained on a Tesla V100 (Floydhub, notebook included in src/main) and the script took close to an hour to run.
+**Please take a look at the script(s) before running them to adjust the batch_size and other params etc. as per your choosing.**      
+
+2. Named Entity Recognition on CoNLL 2003 Data. Details TBA, uses FastText embeddings right now but one potential thing to try would be to use BERT embeddings instead (possibly while using BERT in no_grad mode)
 
 
 Both have been tried on a CPU and Tesla K80/Tesla V100. #1 will take a lot longer than #2 as the BERT transformer is a huge model. Both will default to using a cuda gpu if one is available. This can be changed through a single line of code in each src/main script.
 
 The src/main scripts will most likely need some changes if you intend to run them locally.
 
-Still a WIP. I'll be adding refinements on a regular basis
+Still a WIP. Some of the classes included are supporting infrastructure for more complex tasks but are still being developed and aren't used right now. I'll be adding refinements on a regular basis. Comments/suggestions are welcome. Will very much appreciate letting me know if you spot (or think there's a possibility of) a bug. Thanks
 
-Some issues I intend to tackle in the upcoming check-ins: 
+Special thanks to huggingface for porting BERT to Pytorch. #1 would not have been possible otherwise. Please refer to https://github.com/huggingface/pytorch-pretrained-BERT to access this awesome implementation.  
 
-1. Use a composite loss function to avoid gradient decay
