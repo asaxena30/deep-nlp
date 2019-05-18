@@ -2,9 +2,9 @@ from typing import List, Iterable
 from itertools import groupby
 
 
-def build_uniformly_sized_batches(max_batch_size: int, elements: List) -> List:
-    sorted_elements: List = sorted(elements, key=len)
-    elements_grouped_by_length = groupby(sorted_elements, key=len)
+def build_uniformly_sized_batches(max_batch_size: int, elements: List, sort_key = len) -> List:
+    sorted_elements: List = sorted(elements, key=sort_key)
+    elements_grouped_by_length = groupby(sorted_elements, key=sort_key)
     batches: List = []
 
     for length, grouper in elements_grouped_by_length:
@@ -22,4 +22,3 @@ def split_if_longer_than_given_size(iterable: Iterable, max_iterable_size: int) 
         return [iterable_list]
 
     return [iterable_list[i:i + max_iterable_size] for i in range(0, len(iterable_list), max_iterable_size)]
-

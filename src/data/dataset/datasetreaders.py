@@ -43,12 +43,12 @@ class SquadReader:
 
             for article in dataset:
                 for paragraph_json in article['paragraphs']:
-                    paragraph = paragraph_json["context"]
+                    paragraph = SquadReader.correct_known_typos(paragraph_json["context"])
 
                     for question_answer in paragraph_json['qas']:
                         if include_unanswerable_questions:
                             raise UnsupportedOperationError("no support for unanswerable questions yet")
-                        question_text = question_answer["question"].strip().replace("\n", "")
+                        question_text = SquadReader.correct_known_typos(question_answer["question"].strip().replace("\n", ""))
                         answer_texts = [answer['text'] for answer in question_answer['answers']]
 
                         # effectively, no answers means it's an unanswerable question which isn't supported yet
@@ -62,3 +62,7 @@ class SquadReader:
                                "answer": answer_texts[0],
                                "span_start": span_starts[0],
                                "span_end": span_ends[0]}
+
+    @staticmethod
+    def correct_known_typos(question_or_passage_text: str):
+        return question_or_passage_text.replace("assimilted", "assimilated")

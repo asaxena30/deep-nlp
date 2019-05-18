@@ -1,21 +1,24 @@
 import math
-from typing import List, Tuple, NamedTuple
+from typing import List, NamedTuple
 from collections import namedtuple
+import pdb
 
 from tqdm import tqdm
 import torch
-from torch.utils.data.dataloader import DataLoader, default_collate
+from torch.utils.data.dataloader import DataLoader
 
 from src.common.neural_net_param_utils import normal_weight_init, print_gradients
-from src.data.instance.instance import SquadTensorInstance
-from src.tokenization.pretrained_bert_tokenizer import PretrainedBertTokenizer
+from src.data.instance.instance import QAInstanceWithAnswerSpan
+from src.modules.question_answering_modules import QAModuleWithAttentionNoBert
+from src.tokenization.tokenizers import SpacyTokenizer
 from src.data.dataset.datasetreaders import SquadReader
-from src.data.dataset.dataset import SquadDatasetForBert
-from src.modules.question_answering_modules import BertQuestionAnsweringModule, BertQuestionAnsweringModuleSimplified
-from torch.nn.functional import pad
-from torch.utils.checkpoint import checkpoint
+from src.data.dataset.dataset import SquadDataset
+from typing import Dict
 from pytorch_pretrained_bert.optimization import BertAdam
 
+
+from src.util import datasetutils
+import spacy
 
 dataset_data_file_path: str = "../../data/SQuAD"
 
@@ -27,29 +30,16 @@ dev_data_file_path: str = dataset_data_file_path + "/sample.json"
 
 
 # the number of epochs to train the model for
-NUM_EPOCHS: int = 2
+NUM_EPOCHS: int = 1
 
 # batch size to use for training. The default can be kept small when using gradient accumulation. However, if
 # use_gradient_accumulation were to be False, it's best to use a reasonably large batch size
-BATCH_SIZE: int = 3
+BATCH_SIZE: int = 50
 
-# max-allowed token sequence length for pretrained-model
-MAX_ALLOWED_BERT_TOKEN_SEQUENCE_LENGTH: int = 512
+WORD_EMBEDDING_SIZE = 300
 
-use_checkpointing: bool = False
-use_gradient_accumulation: bool = True
-
-# num of gradient accumulation steps. Will have no effect if use_gradient_accumulation is false
-NUM_GRADIENT_ACCUMULATION_STEPS: int = 10
-
-
-device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-
-SquadTensorTuple: NamedTuple = namedtuple('SquadTensorTuple', ['token_ids', 'segment_ids', 'answer_start_index',
-                                                               'answer_end_index', 'attention_mask'])
-
-pretrained_bert_tokenizer = PretrainedBertTokenizer('bert-base-uncased')
+fasttext_file_path: str = "/Users/asaxena/Downloads/fasttext_300d/fasttext-300d.vec"
+fasttext_vectors_as_ordered_dict: Dict[str, torch.Tensor] = datasetutils.load_word_vectors_as_ordered_dict(fasttext_file_path, expected_embedding_size = WORD_EMBEDDING_SIZE)
 
 answer_start_marker = "π"
 answer_end_marker = "ß"
@@ -57,32 +47,46 @@ answer_end_marker = "ß"
 answer_start_marker_with_spaces: str = " %s " % answer_start_marker
 answer_end_marker_with_spaces: str = " %s " % answer_end_marker
 
+spacy_nlp = spacy.load("en_core_web_sm")
+spacy_tokenizer = SpacyTokenizer(spacy_nlp)
+
+device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+SquadTuple: NamedTuple = namedtuple('SquadTuple', ['question_tokens', 'passage_tokens', 'answer_start_index',
+                                                   'answer_end_index', 'answer'])
+
 
 def collate_with_padding(batch):
-    if not isinstance(batch[0], SquadTensorInstance):
-        return default_collate(batch)
+    if not isinstance(batch[0], QAInstanceWithAnswerSpan):
+        raise NotImplementedError("only a QAInstanceWithAnswerSpan is supported for this class")
 
-    max_length_instance = max(batch, key = lambda batch_item: batch_item.token_ids.size()[0])
-    max_length = max_length_instance.token_ids.size()[0]
-    batch_as_tensor_tuples = []
+    max_question_length_instance = max(batch, key = lambda batch_item: len(batch_item.question))
+    max_question_length = len(max_question_length_instance.question)
+
+    max_passage_length_instance = max(batch, key = lambda batch_item: len(batch_item.passage))
+    max_passage_length = len(max_passage_length_instance.passage)
+    batches = []
+
     for instance in batch:
-        instance_length = instance.token_ids.size()[0]
-        padding_size = max_length - instance_length
-        instance.token_ids = pad(instance.token_ids, (0, padding_size))
-        instance.segment_ids = pad(instance.segment_ids, (0, padding_size))
-        instance.attention_mask = torch.tensor([1] * instance_length + [0] * padding_size, device = device)
-        batch_as_tensor_tuples.append(
-            SquadTensorTuple(instance.token_ids, instance.segment_ids, instance.answer_indices[0].item(),
-                             instance.answer_indices[1].item(),
-                             instance.attention_mask))
+        instance_question_length = len(instance.question)
+        question_padding_size = max_question_length - instance_question_length
+        instance.question = instance.question + ['pad'] * question_padding_size
 
-    return default_collate(batch_as_tensor_tuples)
+        instance_passage_length = len(instance.passage)
+        instance_padding_size = max_passage_length - instance_passage_length
+        instance.passage = instance.passage + ['pad'] * instance_padding_size
+
+        # batch_as_tuples.append(
+        #     SquadTuple(instance.question, instance.passage, instance.answer_start_and_end_index[0],
+        #                instance.answer_start_and_end_index[1],
+        #                instance.answer))
+        batches.append(instance)
+    return batches
 
 
-def get_squad_dataset_from_file(file_path: str) -> SquadDatasetForBert:
+def get_squad_dataset_from_file(file_path: str) -> SquadDataset:
     instances = SquadReader.read(file_path)
     squad_dataset_list: List = []
-    num_skipped_instances: int = 0
 
     for squad_qa_instance_as_dict in instances:
         if 'span_start' not in squad_qa_instance_as_dict:
@@ -100,8 +104,8 @@ def get_squad_dataset_from_file(file_path: str) -> SquadDatasetForBert:
                                         span_start_char_index: span_end_char_index] + answer_end_marker_with_spaces + \
                                         passage_text[span_end_char_index:]
 
-        passage_tokens = pretrained_bert_tokenizer.tokenize(passage_text_for_tokenization)
-        question_tokens = pretrained_bert_tokenizer.tokenize(squad_qa_instance_as_dict['question'])
+        passage_tokens = spacy_tokenizer.tokenize(passage_text_for_tokenization)
+        question_tokens = spacy_tokenizer.tokenize(squad_qa_instance_as_dict['question'])
 
         answer_start_marker_index = passage_tokens.index(answer_start_marker)
         answer_end_marker_index = passage_tokens.index(answer_end_marker)
@@ -111,161 +115,77 @@ def get_squad_dataset_from_file(file_path: str) -> SquadDatasetForBert:
                          passage_tokens[answer_start_marker_index + 1: answer_end_marker_index] + \
                          passage_tokens[answer_end_marker_index + 1:]
 
-        answer_span_start_token_index: int = answer_start_marker_index + len(question_tokens)
+        answer_span_start_token_index: int = answer_start_marker_index
 
         # removing the start marker, shifts the answer towards the start by an additional index,
         # hence -2 as opposed to -1
-        answer_span_end_token_index: int = answer_end_marker_index - 2 + len(question_tokens)
+        answer_span_end_token_index: int = answer_end_marker_index - 2
 
-        all_tokens = question_tokens + passage_tokens
-
-        if len(all_tokens) > MAX_ALLOWED_BERT_TOKEN_SEQUENCE_LENGTH:
-            num_skipped_instances += 1
-            continue
-
-        all_token_ids = pretrained_bert_tokenizer.convert_tokens_to_ids(all_tokens)
-        all_segment_ids = [0 for question_token in question_tokens] + [1 for passage_token in passage_tokens]
         answer_indices = (answer_span_start_token_index, answer_span_end_token_index)
 
-        instance_tensor = SquadTensorInstance(torch.tensor(all_token_ids, dtype = torch.long, device = device),
-                                              torch.tensor(all_segment_ids, dtype = torch.long, device = device),
-                                              torch.tensor(answer_indices, dtype = torch.long, device = device))
+        instance = QAInstanceWithAnswerSpan(question = question_tokens, passage = passage_tokens,
+                                            answer = squad_qa_instance_as_dict['answer'],
+                                            answer_start_and_end_index = answer_indices,
+                                            total_length = len(question_tokens + passage_tokens))
 
-        squad_dataset_list.append(instance_tensor)
+        squad_dataset_list.append(instance)
 
         # print(passage_tokens)
         # print(question_tokens)
         # print(squad_qa_instance_as_dict['answer'])
 
-    return SquadDatasetForBert(squad_dataset_list), num_skipped_instances
+    return SquadDataset(sorted(squad_dataset_list, key = lambda x: x.total_length))
 
 
-train_dataset, num_skipped_training_instances = get_squad_dataset_from_file(training_data_file_path)
+# note the additional zeros Tensor. This is done to assign an embedding of torch.zeros(300) to unknown words. Since the
+# embedding is trainable, we expect this to change as training progresses
+# embedding = torch.nn.Embedding(embedding_dim = 300, num_embeddings = num_embeddings,
+#                                _weight = torch.cat([val.unsqueeze(dim = 0) for val in fasttext_vectors_as_ordered_dict.values()] +
+#                                                                    [torch.zeros((1, 300))], 0))
+# embedding_index_for_unknown_words = torch.tensor([num_embeddings - 1], dtype = torch.long)
+#
+# print(embedding[embedding_index_for_unknown_words])
+
+embedding_weights = torch.cat([val.unsqueeze(dim = 0) for val in fasttext_vectors_as_ordered_dict.values()] +
+                              [torch.zeros(1, 300)])
+
+num_embeddings = embedding_weights.shape[0]
+
+embedding = torch.nn.Embedding(embedding_dim = WORD_EMBEDDING_SIZE, num_embeddings = num_embeddings,
+                               _weight = embedding_weights)
+
+embedding_index_for_unknown_words = torch.tensor([num_embeddings - 1], dtype = torch.long)
+
+# print(embedding(embedding_index_for_unknown_words))
+
+words_to_index_dict = {key: index for index, key in enumerate(fasttext_vectors_as_ordered_dict.keys())}
+
+train_dataset = get_squad_dataset_from_file(training_data_file_path)
+
 train_dataloader = DataLoader(train_dataset, batch_size = BATCH_SIZE, collate_fn = collate_with_padding)
 
-test_dataset, num_skipped_test_instances = get_squad_dataset_from_file(dev_data_file_path)
-test_dataloader = DataLoader(test_dataset, batch_size = BATCH_SIZE, collate_fn = collate_with_padding)
+qa_module = QAModuleWithAttentionNoBert(embedding, token_to_index_dict = words_to_index_dict,
+                                        embedding_index_for_unknown_words = num_embeddings - 1, device = device)
 
-print("num skipped training instances: " + str(num_skipped_training_instances))
-print("num skipped test instances: " + str(num_skipped_test_instances))
-
-bert_qa_module = BertQuestionAnsweringModuleSimplified(device = device,
-                                             named_param_weight_initializer = normal_weight_init)
-
-bert_qa_module.to(device)
-
-print("num named parameters: " + str(len([p for n, p in bert_qa_module.named_parameters()])))
-
-# this makes sure checkpointing still calculates gradients,
-# refer to https://discuss.pytorch.org/t/checkpoint-with-no-grad-requiring-inputs-problem/19117/11
-unused_tensor = torch.zeros((2, 2), requires_grad = True).to(device)
-
-if use_checkpointing:
-    # refer to https://github.com/prigoyal/pytorch_memonger/blob/master/tutorial/Checkpointing_for_PyTorch_models.ipynb
-    # dropout is not recommended while using checkpointing.
-    # Note that BERT also uses layer-norm internally. So far, disabling that hasn't been tried in checkpointing mode
-    bert_qa_module.bert_model.config.attention_probs_dropout_prob = 0
-    bert_qa_module.bert_model.config.hidden_dropout_prob = 0
-
+qa_module.to(device = device)
 loss_function = torch.nn.CrossEntropyLoss()
 
 num_train_iterations = NUM_EPOCHS * math.ceil(len(train_dataset) / BATCH_SIZE)
-optimizer = BertAdam(bert_qa_module.parameters(), lr = 5e-5, warmup = 0.1, t_total = num_train_iterations)
 
-batch_num: int = 0
+# TODO change this to use pytorch's cyclic LR instead
+optimizer = BertAdam(qa_module.parameters(), lr = 5e-5, warmup = 0.1, t_total = num_train_iterations)
 
 for epoch in tqdm(range(NUM_EPOCHS)):
     print("inside training loop")
-    for data_item in train_dataloader:
+    for batch in train_dataloader:
+        qa_module.zero_grad()
+        start_index_outputs, end_index_outputs = qa_module(batch)
 
-        answer_start_index_batch_as_matrix = data_item[2].unsqueeze(dim = 1).to(device = device)
-        answer_end_index_batch_as_matrix = data_item[3].unsqueeze(dim = 1).to(device = device)
+        answer_start_and_end_indices_original = torch.tensor([instance.answer_start_and_end_index for instance in batch], dtype = torch.long)
+        answer_start_indices_original, answer_end_indices_original = torch.chunk(answer_start_and_end_indices_original, chunks = 2, dim = 1)
 
-        # Note that pytorch's checkpoint method does not imply the traditional meaning of checkpointing
-        # (which generally indicates saving a model/process to be resumed later). Instead, it's a
-        # process to avoid memory consumption (caused by reverse mode auto-differentiation) at the cost of performance.
-        # More here: https://pytorch.org/docs/stable/checkpoint.html
-        # checkpointing was simply added to ensure the model can run on a cpu or low-cost GPUs, else
-        # the BERT transformer makes a 12 GB Tesla K80 run out of memory.
-
-        if use_checkpointing:
-            bert_model_output: Tuple[torch.Tensor, torch.Tensor] = checkpoint(bert_qa_module, data_item[0],
-                                                                              data_item[1], data_item[4], unused_tensor)
-        else:
-            bert_model_output: Tuple[torch.Tensor, torch.Tensor] = bert_qa_module(input_ids = data_item[0],
-                                                                                  token_type_ids = data_item[1],
-                                                                                  attention_mask = data_item[4],
-                                                                                  output_all_encoded_layers = False)
-
-        batch_num += 1
-
-        answer_start_indices_chosen_by_model = torch.squeeze(torch.topk(bert_model_output[0], 1, dim = 1)[1])
-        answer_end_indices_chosen_by_model = torch.squeeze(torch.topk(bert_model_output[1], 1, dim = 1)[1])
-
-        # start index loss
-        answer_start_index_loss = loss_function(bert_model_output[0], answer_start_index_batch_as_matrix)
-
-        # answer end-index loss
-        answer_end_index_loss = loss_function(bert_model_output[1], answer_end_index_batch_as_matrix)
-
-        total_loss = answer_start_index_loss + answer_end_index_loss
-
-        if use_gradient_accumulation:
-            total_loss = total_loss / NUM_GRADIENT_ACCUMULATION_STEPS
-
+        start_index_loss = loss_function(start_index_outputs, torch.squeeze(answer_start_indices_original))
+        end_index_loss = loss_function(end_index_outputs, torch.squeeze(answer_end_indices_original))
+        total_loss = start_index_loss + end_index_loss
         total_loss.backward()
-
-        if batch_num % 10 == 0:
-            print("output calculation done for batch#: " + str(batch_num))
-            print("total loss: " + str(total_loss.data.item()))
-            print_gradients(bert_qa_module.named_parameters())
-
-        if not use_gradient_accumulation or batch_num % NUM_GRADIENT_ACCUMULATION_STEPS == 0:
-            optimizer.step()
-            bert_qa_module.zero_grad()
-
-        #         print(bert_model_output)
-        #         print(bert_model_output[0].size())
-        #         print(bert_model_output[1].size())
-
-
-# eval mode switches off features such as dropout and batch_norm
-bert_qa_module.eval()
-
-num_correct_start_index_answers: int = 0
-num_correct_end_index_answers: int = 0
-total_answers: int = 0
-
-with torch.no_grad():
-    for data_item in test_dataloader:
-        bert_model_output: Tuple[torch.Tensor, torch.Tensor] = bert_qa_module(input_ids = data_item[0], token_type_ids =
-        data_item[1], attention_mask = data_item[4], output_all_encoded_layers = False)
-
-        answer_start_index_batch_as_matrix = data_item[2].unsqueeze(dim = 1).to(device = device)
-        answer_end_index_batch_as_matrix = data_item[3].unsqueeze(dim = 1).to(device = device)
-
-        answer_start_index_loss = loss_function(bert_model_output[0], answer_start_index_batch_as_matrix)
-        answer_end_index_loss = loss_function(bert_model_output[1], answer_end_index_batch_as_matrix)
-        total_loss = answer_start_index_loss + answer_end_index_loss
-
-        answer_start_indices_chosen_by_model = torch.squeeze(torch.topk(bert_model_output[0], 1, dim = 1)[1])
-        answer_end_indices_chosen_by_model = torch.squeeze(torch.topk(bert_model_output[1], 1, dim = 1)[1])
-
-        print("batch loss: " + str(total_loss))
-        print("answer start indices size: " + str(answer_start_indices_chosen_by_model.size()))
-        print("answer end indices size: " + str(answer_end_indices_chosen_by_model.size()))
-        print(answer_end_indices_chosen_by_model)
-
-        answer_start_index_comparison_tensor = torch.eq(answer_start_index_batch_as_matrix,
-                                                        answer_start_indices_chosen_by_model)
-        answer_end_index_comparison_tensor = torch.eq(answer_end_index_batch_as_matrix,
-                                                      answer_end_indices_chosen_by_model)
-
-        num_correct_start_index_answers += answer_start_index_comparison_tensor.sum().item()
-        num_correct_end_index_answers += answer_end_index_comparison_tensor.sum().item()
-        total_answers += (answer_start_indices_chosen_by_model.size()[0] if
-                          answer_start_indices_chosen_by_model.dim() > 0 else 1)
-
-print("start index accuracy: " + str(num_correct_start_index_answers / total_answers))
-print("end index accuracy: " + str(num_correct_end_index_answers / total_answers))
-print("total answers: " + str(total_answers))
+        optimizer.step()

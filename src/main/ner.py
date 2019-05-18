@@ -23,7 +23,7 @@ hidden_state_size: int = 200
 batch_size: int = 50
 
 fasttext_file_path: str = "/Users/asaxena/Downloads/fasttext_300d/fasttext-300d.vec"
-fasttext: Dict[str, torch.Tensor] = datasetutils.load_fasttext_vectors_as_dict(fasttext_file_path)
+fasttext: Dict[str, torch.Tensor] = datasetutils.load_word_vectors_as_ordered_dict(fasttext_file_path)
 
 trim_ner_tag_prefixes: bool = False
 ner_tags_with_prefixes: list = ["I-PER", "I-LOC", "B-LOC", "I-ORG", "B-ORG", "I-MISC", "B-MISC", "O"]

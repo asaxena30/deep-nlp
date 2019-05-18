@@ -3,6 +3,8 @@ from torch.utils.data.dataset import Dataset
 from src.data.batch import Batch
 from typing import List, NamedTuple
 
+from src.data.instance.instance import QAInstanceWithAnswerSpan
+
 
 class BatchedDataset(Dataset):
     """
@@ -58,6 +60,20 @@ class SquadDatasetForBert(Dataset):
             2. answer start index and end-index as tensor
     """
     def __init__(self, instances: List[NamedTuple]):
+        self.instances = instances
+
+    def __getitem__(self, index):
+        return self.instances[index]
+
+    def __len__(self):
+        return len(self.instances)
+
+
+class SquadDataset(Dataset):
+    """
+        instances: a list of SquadInstances
+    """
+    def __init__(self, instances: List[QAInstanceWithAnswerSpan]):
         self.instances = instances
 
     def __getitem__(self, index):

@@ -6,7 +6,8 @@ from src.common import CustomTypes
 
 def load_fasttext():
     fasttext_file_path: str = "/Users/asaxena/Downloads/fasttext_300d/fasttext-300d.vec"
-    fasttext: Dict[str, torch.Tensor] = datasetutils.load_fasttext_vectors_as_dict(fasttext_file_path)
+    fasttext: Dict[str, torch.Tensor] = datasetutils.load_word_vectors_as_ordered_dict(fasttext_file_path,
+                                                                                       expected_embedding_size = 300)
     return fasttext
 
 
@@ -68,3 +69,13 @@ def get_word_embeddings_for_tagged_sentences(training_sentences_with_tags: List[
 
     return all_sentence_batches_as_tensor_tuples
 
+
+def build_index_tensor_for_tokenized_sentences(tokenized_sentence_list: List[List[str]], token_to_index_dict: Dict,
+                                               index_for_unknown_tokens: int):
+    sentence_tensor_list: List[torch.Tensor] = []
+    for tokenized_sentence in tokenized_sentence_list:
+        sentence_tensor = torch.tensor([token_to_index_dict[token] if token in token_to_index_dict else index_for_unknown_tokens
+                                        for token in tokenized_sentence], dtype = torch.long)
+        sentence_tensor_list.append(sentence_tensor)
+
+    return torch.stack(sentence_tensor_list, dim = 0)
