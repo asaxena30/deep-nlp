@@ -5,6 +5,7 @@ from typing import List, NamedTuple
 
 import spacy
 import torch
+from pytorch_pretrained_bert import BertAdam
 from torch.optim.lr_scheduler import CyclicLR
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
@@ -21,19 +22,19 @@ dataset_data_file_path: str = "../../data/SQuAD"
 # training_data_file_path: str = dataset_data_file_path + "/train-v2.0.json"
 # dev_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
 
-training_data_file_path: str = dataset_data_file_path + "/sample.json"
-dev_data_file_path: str = dataset_data_file_path + "/sample.json"
+# training_data_file_path: str = dataset_data_file_path + "/sample.json"
+# dev_data_file_path: str = dataset_data_file_path + "/sample.json"
 
-# training_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
-# dev_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
+training_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
+dev_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
 
 
 # the number of epochs to train the model for
-NUM_EPOCHS: int = 3
+NUM_EPOCHS: int = 2
 
 # batch size to use for training. The default can be kept small when using gradient accumulation. However, if
 # use_gradient_accumulation were to be False, it's best to use a reasonably large batch size
-BATCH_SIZE: int = 32
+BATCH_SIZE: int = 50
 
 WORD_EMBEDDING_SIZE = 300
 
@@ -171,8 +172,8 @@ loss_function = torch.nn.CrossEntropyLoss()
 
 num_train_iterations = NUM_EPOCHS * math.ceil(len(train_dataset) / BATCH_SIZE)
 
-# optimizer = BertAdam(qa_module.parameters(), lr = 5e-5, warmup = 0.1, t_total = num_train_iterations)
-optimizer = torch.optim.Adam(qa_module.parameters())
+optimizer = BertAdam(qa_module.parameters(), lr = 5e-5, warmup = 0.1, t_total = num_train_iterations)
+# optimizer = torch.optim.Adam(qa_module.parameters(), lr = 5e-5)
 # scheduler = CyclicLR(optimizer, base_lr = 3e-5, max_lr = 0.01, step_size_up = 10, step_size_down = 90, cycle_momentum = False)
 
 iteration_count: int = 0
@@ -186,8 +187,12 @@ for epoch in tqdm(range(NUM_EPOCHS)):
         answer_start_and_end_indices_original = torch.tensor([instance.answer_start_and_end_index for instance in batch], dtype = torch.long)
         answer_start_indices_original, answer_end_indices_original = torch.chunk(answer_start_and_end_indices_original, chunks = 2, dim = 1)
 
-        start_index_loss = loss_function(start_index_outputs, torch.squeeze(answer_start_indices_original).to(device = device))
-        end_index_loss = loss_function(end_index_outputs, torch.squeeze(answer_end_indices_original).to(device = device))
+        # start_index_loss = loss_function(start_index_outputs, torch.squeeze(answer_start_indices_original).to(device = device))
+        # end_index_loss = loss_function(end_index_outputs, torch.squeeze(answer_end_indices_original).to(device = device))
+
+        start_index_loss = loss_function(start_index_outputs, answer_start_indices_original.to(device = device))
+        end_index_loss = loss_function(end_index_outputs, answer_end_indices_original.to(device = device))
+
         total_loss = start_index_loss + end_index_loss
 
         if iteration_count % 10 == 0:

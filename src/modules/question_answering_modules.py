@@ -150,10 +150,10 @@ class QAModuleWithAttentionNoBert(Module):
         self.self_attention_module_2 = SelfAttention(self.embedding.embedding_dim * 4)
 
         # linear layers to condense the output for start and end-index respectively
-        self.linear_layer_after_self_attention_1 = torch.nn.Linear(self.embedding.embedding_dim * 4, self.embedding.embedding_dim, bias = False)
-        self.linear_layer_after_self_attention_2 = torch.nn.Linear(self.embedding.embedding_dim * 4, self.embedding.embedding_dim, bias = False)
+        self.linear_layer_after_self_attention_1 = torch.nn.Linear(self.embedding.embedding_dim * 4, 1, bias = False)
+        self.linear_layer_after_self_attention_2 = torch.nn.Linear(self.embedding.embedding_dim * 4, 1, bias = False)
 
-        self.linear_layer_for_final_question_embedding = torch.nn.Linear(self.embedding.embedding_dim, self.embedding.embedding_dim, bias = False)
+        # self.linear_layer_for_final_question_embedding = torch.nn.Linear(self.embedding.embedding_dim, self.embedding.embedding_dim, bias = False)
         self.device = device
 
     def forward(self, instance_batch: List[QAInstanceWithAnswerSpan]):
@@ -208,22 +208,22 @@ class QAModuleWithAttentionNoBert(Module):
                                                                                                 passage_batch.shape[1]], dim = 1)[1]
 
         # final_question_embedding and passage_condensed_to_original_embedding_size are (N, LENGTH, INPUT_EMBEDDING_SIZE) with LENGTH being either the question or the passage length.
-        final_question_embedding = self.linear_layer_for_final_question_embedding(question_batch)
+        # final_question_embedding = self.linear_layer_for_final_question_embedding(question_batch)
 
         # (N, 1, INPUT_EMBEDDING_SIZE)
-        question_batch_with_word_vectors_added = torch.sum(final_question_embedding, dim = 1, keepdim = True)
+        # question_batch_with_word_vectors_added = torch.sum(final_question_embedding, dim = 1, keepdim = True)
 
         # condensed passage for start and end index respectively
-        passage_condensed_to_original_embedding_size_1 = self.linear_layer_after_self_attention_1(passage_splitted)
-        passage_condensed_to_original_embedding_size_2 = self.linear_layer_after_self_attention_2(passage_splitted)
+        final_outputs_for_start_index = self.linear_layer_after_self_attention_1(passage_splitted)
+        final_outputs_for_end_index = self.linear_layer_after_self_attention_2(passage_splitted)
 
         # (N, PASSAGE_LENGTH, INPUT_EMBEDDING_SIZE), same as passage_condensed_to_original_embedding_size
-        question_and_passage_multiplied_1 = torch.mul(question_batch_with_word_vectors_added, passage_condensed_to_original_embedding_size_1)
-        question_and_passage_multiplied_2 = torch.mul(question_batch_with_word_vectors_added, passage_condensed_to_original_embedding_size_2)
-
-        # (N, PASSAGE_LENGTH) suitable dimension for pytorch cross entropy loss
-        final_outputs_for_start_index = torch.sum(question_and_passage_multiplied_1, dim = 2, keepdim = False)
-        final_outputs_for_end_index = torch.sum(question_and_passage_multiplied_2, dim = 2, keepdim = False)
+        # question_and_passage_multiplied_1 = torch.mul(question_batch_with_word_vectors_added, passage_condensed_to_original_embedding_size_1)
+        # question_and_passage_multiplied_2 = torch.mul(question_batch_with_word_vectors_added, passage_condensed_to_original_embedding_size_2)
+        #
+        # # (N, PASSAGE_LENGTH) suitable dimension for pytorch cross entropy loss
+        # final_outputs_for_start_index = torch.sum(question_and_passage_multiplied_1, dim = 2, keepdim = False)
+        # final_outputs_for_end_index = torch.sum(question_and_passage_multiplied_2, dim = 2, keepdim = False)
 
         return final_outputs_for_start_index, final_outputs_for_end_index
 
