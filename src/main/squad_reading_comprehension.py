@@ -1,24 +1,20 @@
 import math
-from typing import List, NamedTuple
 from collections import namedtuple
-import pdb
+from typing import Dict
+from typing import List, NamedTuple
 
-from tqdm import tqdm
+import spacy
 import torch
+from torch.optim.lr_scheduler import CyclicLR
 from torch.utils.data.dataloader import DataLoader
+from tqdm import tqdm
 
-from src.common.neural_net_param_utils import normal_weight_init, print_gradients
+from src.data.dataset.dataset import SquadDataset
+from src.data.dataset.datasetreaders import SquadReader
 from src.data.instance.instance import QAInstanceWithAnswerSpan
 from src.modules.question_answering_modules import QAModuleWithAttentionNoBert
 from src.tokenization.tokenizers import SpacyTokenizer
-from src.data.dataset.datasetreaders import SquadReader
-from src.data.dataset.dataset import SquadDataset
-from typing import Dict
-from pytorch_pretrained_bert.optimization import BertAdam
-
-
 from src.util import datasetutils
-import spacy
 
 dataset_data_file_path: str = "../../data/SQuAD"
 
@@ -28,13 +24,16 @@ dataset_data_file_path: str = "../../data/SQuAD"
 training_data_file_path: str = dataset_data_file_path + "/sample.json"
 dev_data_file_path: str = dataset_data_file_path + "/sample.json"
 
+# training_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
+# dev_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
+
 
 # the number of epochs to train the model for
-NUM_EPOCHS: int = 1
+NUM_EPOCHS: int = 3
 
 # batch size to use for training. The default can be kept small when using gradient accumulation. However, if
 # use_gradient_accumulation were to be False, it's best to use a reasonably large batch size
-BATCH_SIZE: int = 50
+BATCH_SIZE: int = 32
 
 WORD_EMBEDDING_SIZE = 300
 
@@ -162,7 +161,7 @@ words_to_index_dict = {key: index for index, key in enumerate(fasttext_vectors_a
 
 train_dataset = get_squad_dataset_from_file(training_data_file_path)
 
-train_dataloader = DataLoader(train_dataset, batch_size = BATCH_SIZE, collate_fn = collate_with_padding)
+train_dataloader = DataLoader(train_dataset, batch_size = BATCH_SIZE, collate_fn = collate_with_padding, shuffle = True)
 
 qa_module = QAModuleWithAttentionNoBert(embedding, token_to_index_dict = words_to_index_dict,
                                         embedding_index_for_unknown_words = num_embeddings - 1, device = device)
@@ -172,8 +171,11 @@ loss_function = torch.nn.CrossEntropyLoss()
 
 num_train_iterations = NUM_EPOCHS * math.ceil(len(train_dataset) / BATCH_SIZE)
 
-# TODO change this to use pytorch's cyclic LR instead
-optimizer = BertAdam(qa_module.parameters(), lr = 5e-5, warmup = 0.1, t_total = num_train_iterations)
+# optimizer = BertAdam(qa_module.parameters(), lr = 5e-5, warmup = 0.1, t_total = num_train_iterations)
+optimizer = torch.optim.Adam(qa_module.parameters())
+# scheduler = CyclicLR(optimizer, base_lr = 3e-5, max_lr = 0.01, step_size_up = 10, step_size_down = 90, cycle_momentum = False)
+
+iteration_count: int = 0
 
 for epoch in tqdm(range(NUM_EPOCHS)):
     print("inside training loop")
@@ -184,8 +186,16 @@ for epoch in tqdm(range(NUM_EPOCHS)):
         answer_start_and_end_indices_original = torch.tensor([instance.answer_start_and_end_index for instance in batch], dtype = torch.long)
         answer_start_indices_original, answer_end_indices_original = torch.chunk(answer_start_and_end_indices_original, chunks = 2, dim = 1)
 
-        start_index_loss = loss_function(start_index_outputs, torch.squeeze(answer_start_indices_original))
-        end_index_loss = loss_function(end_index_outputs, torch.squeeze(answer_end_indices_original))
+        start_index_loss = loss_function(start_index_outputs, torch.squeeze(answer_start_indices_original).to(device = device))
+        end_index_loss = loss_function(end_index_outputs, torch.squeeze(answer_end_indices_original).to(device = device))
         total_loss = start_index_loss + end_index_loss
+
+        if iteration_count % 10 == 0:
+            print(total_loss)
+
         total_loss.backward()
+        # scheduler.step()
         optimizer.step()
+        iteration_count += 1
+
+

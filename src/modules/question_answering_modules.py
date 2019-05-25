@@ -160,17 +160,18 @@ class QAModuleWithAttentionNoBert(Module):
         question_batch_index_tensor: torch.Tensor = \
             build_index_tensor_for_tokenized_sentences(tokenized_sentence_list = [instance.question for instance in instance_batch],
                                                        token_to_index_dict = self.token_to_index_dict,
-                                                       index_for_unknown_tokens = self.embedding_index_for_unknown_words)
+                                                       index_for_unknown_tokens = self.embedding_index_for_unknown_words).to(device = self.device)
+
         passage_batch_index_tensor: torch.Tensor =\
             build_index_tensor_for_tokenized_sentences(tokenized_sentence_list = [instance.passage for instance in instance_batch],
                                                        token_to_index_dict = self.token_to_index_dict,
-                                                       index_for_unknown_tokens = self.embedding_index_for_unknown_words)
+                                                       index_for_unknown_tokens = self.embedding_index_for_unknown_words).to(device = self.device)
 
         # answer_indexes_tensor = torch.stack([torch.tensor(instance.answer_start_and_end_index, dtype = torch.int8)
         #                                      for instance in instance_batch], dim = 0)
 
-        question_batch = self.embedding(question_batch_index_tensor).to(device = self.device)
-        passage_batch = self.embedding(passage_batch_index_tensor).to(device = self.device)
+        question_batch = self.embedding(question_batch_index_tensor)
+        passage_batch = self.embedding(passage_batch_index_tensor)
 
         # the pytorch lstm outputs: output, (h_n, c_n)
         question_lstm_output = self.lstm_for_question_encoding(question_batch, self.__init_lstm_hidden_and_cell_state(
