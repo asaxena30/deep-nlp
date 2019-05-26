@@ -5,7 +5,6 @@ from typing import List, NamedTuple
 
 import spacy
 import torch
-from pytorch_pretrained_bert import BertAdam
 from torch.optim.lr_scheduler import CyclicLR
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
@@ -13,7 +12,7 @@ from tqdm import tqdm
 from src.data.dataset.dataset import SquadDataset
 from src.data.dataset.datasetreaders import SquadReader
 from src.data.instance.instance import QAInstanceWithAnswerSpan
-from src.modules.question_answering_modules import QAModuleWithAttentionNoBert
+from src.modules.question_answering_modules import QAModuleWithAttentionNoBert2
 from src.tokenization.tokenizers import SpacyTokenizer
 from src.util import datasetutils
 
@@ -22,11 +21,11 @@ dataset_data_file_path: str = "../../data/SQuAD"
 # training_data_file_path: str = dataset_data_file_path + "/train-v2.0.json"
 # dev_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
 
-# training_data_file_path: str = dataset_data_file_path + "/sample.json"
-# dev_data_file_path: str = dataset_data_file_path + "/sample.json"
+training_data_file_path: str = dataset_data_file_path + "/sample.json"
+dev_data_file_path: str = dataset_data_file_path + "/sample.json"
 
-training_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
-dev_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
+# training_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
+# dev_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
 
 
 # the number of epochs to train the model for
@@ -164,16 +163,16 @@ train_dataset = get_squad_dataset_from_file(training_data_file_path)
 
 train_dataloader = DataLoader(train_dataset, batch_size = BATCH_SIZE, collate_fn = collate_with_padding, shuffle = True)
 
-qa_module = QAModuleWithAttentionNoBert(embedding, token_to_index_dict = words_to_index_dict,
-                                        embedding_index_for_unknown_words = num_embeddings - 1, device = device)
+qa_module = QAModuleWithAttentionNoBert2(embedding, token_to_index_dict = words_to_index_dict,
+                                         embedding_index_for_unknown_words = num_embeddings - 1, device = device)
 
 qa_module.to(device = device)
 loss_function = torch.nn.CrossEntropyLoss()
 
 num_train_iterations = NUM_EPOCHS * math.ceil(len(train_dataset) / BATCH_SIZE)
 
-optimizer = BertAdam(qa_module.parameters(), lr = 5e-5, warmup = 0.1, t_total = num_train_iterations)
-# optimizer = torch.optim.Adam(qa_module.parameters(), lr = 5e-5)
+# optimizer = BertAdam(qa_module.parameters(), lr = 5e-5, warmup = 0.1, t_total = num_train_iterations)
+optimizer = torch.optim.Adam(qa_module.parameters(), lr = 5e-3)
 # scheduler = CyclicLR(optimizer, base_lr = 3e-5, max_lr = 0.01, step_size_up = 10, step_size_down = 90, cycle_momentum = False)
 
 iteration_count: int = 0
@@ -186,9 +185,6 @@ for epoch in tqdm(range(NUM_EPOCHS)):
 
         answer_start_and_end_indices_original = torch.tensor([instance.answer_start_and_end_index for instance in batch], dtype = torch.long)
         answer_start_indices_original, answer_end_indices_original = torch.chunk(answer_start_and_end_indices_original, chunks = 2, dim = 1)
-
-        # start_index_loss = loss_function(start_index_outputs, torch.squeeze(answer_start_indices_original).to(device = device))
-        # end_index_loss = loss_function(end_index_outputs, torch.squeeze(answer_end_indices_original).to(device = device))
 
         start_index_loss = loss_function(start_index_outputs, answer_start_indices_original.to(device = device))
         end_index_loss = loss_function(end_index_outputs, answer_end_indices_original.to(device = device))
@@ -204,3 +200,48 @@ for epoch in tqdm(range(NUM_EPOCHS)):
         iteration_count += 1
 
 
+qa_module.eval()
+
+torch.cuda.empty_cache()
+
+test_dataset = get_squad_dataset_from_file(dev_data_file_path)
+test_dataloader = DataLoader(test_dataset, batch_size = BATCH_SIZE, collate_fn = collate_with_padding)
+
+num_correct_start_index_answers: int = 0
+num_correct_end_index_answers: int = 0
+total_answers: int = 0
+
+with torch.no_grad():
+    for batch in test_dataloader:
+
+        start_index_outputs, end_index_outputs = qa_module(batch)
+
+        answer_start_and_end_indices_original = torch.tensor(
+            [instance.answer_start_and_end_index for instance in batch], dtype = torch.long)
+        answer_start_indices_original, answer_end_indices_original = torch.chunk(answer_start_and_end_indices_original.to(device = device),
+                                                                                 chunks = 2, dim = 1)
+
+        start_index_loss = loss_function(start_index_outputs, answer_start_indices_original)
+        end_index_loss = loss_function(end_index_outputs, answer_end_indices_original)
+
+        total_loss = start_index_loss + end_index_loss
+
+        if iteration_count % 10 == 0:
+            print("test loss at iteration# " + str(iteration_count) + " = " + str(total_loss))
+
+        answer_start_indices_chosen_by_model = torch.squeeze(torch.topk(start_index_outputs, 1, dim = 1)[1])
+        answer_end_indices_chosen_by_model = torch.squeeze(torch.topk(end_index_outputs, 1, dim = 1)[1])
+
+        answer_start_index_comparison_tensor = torch.eq(answer_start_indices_original,
+                                                        answer_start_indices_chosen_by_model)
+        answer_end_index_comparison_tensor = torch.eq(answer_end_indices_original,
+                                                      answer_end_indices_chosen_by_model)
+
+        num_correct_start_index_answers += answer_start_index_comparison_tensor.sum().item()
+        num_correct_end_index_answers += answer_end_index_comparison_tensor.sum().item()
+        total_answers += (answer_start_indices_chosen_by_model.size()[0] if
+                          answer_start_indices_chosen_by_model.dim() > 0 else 1)
+
+print("start index accuracy: " + str(num_correct_start_index_answers / total_answers))
+print("end index accuracy: " + str(num_correct_end_index_answers / total_answers))
+print("total answers: " + str(total_answers))

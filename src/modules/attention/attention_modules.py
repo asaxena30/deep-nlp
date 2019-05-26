@@ -9,8 +9,8 @@ class SelfAttention(Module):
     def __init__(self, input_size: int):
         super().__init__()
         self.input_size = input_size
-        self.attention_weights_lhs = torch.nn.Parameter(kaiming_normal_(torch.Tensor(1, 1, input_size)))
-        self.attention_weights_rhs = torch.nn.Parameter(kaiming_normal_(torch.Tensor(1, 1, input_size)))
+        self.linear_layer_lhs = torch.nn.Linear(input_size, input_size)
+        self.linear_layer_rhs = torch.nn.Linear(input_size, input_size)
 
     def forward(self, input_instance_batch_as_tensor: torch.Tensor):
         """
@@ -19,8 +19,8 @@ class SelfAttention(Module):
         """
         assert input_instance_batch_as_tensor.shape[2] == self.input_size
 
-        left_hand_side_tensors = input_instance_batch_as_tensor * self.attention_weights_lhs
-        right_hand_side_tensors = input_instance_batch_as_tensor * self.attention_weights_rhs
+        left_hand_side_tensors = self.linear_layer_lhs(input_instance_batch_as_tensor)
+        right_hand_side_tensors = self.linear_layer_rhs(input_instance_batch_as_tensor)
 
         # final_attention_weights has dim (N, SEQUENCE_LENGTH, SEQUENCE_LENGTH)
         final_attention_weights = F.softmax(torch.matmul(left_hand_side_tensors, torch.transpose(right_hand_side_tensors, 1, 2)), dim = 2)
