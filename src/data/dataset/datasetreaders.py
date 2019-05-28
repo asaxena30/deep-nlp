@@ -1,7 +1,7 @@
 from typing import List
 import json
 from src.errors.custom_errors import UnsupportedOperationError
-
+import rapidjson
 
 class Conll2003Reader:
     def __init__(self, filepaths: List[str]):
@@ -38,7 +38,7 @@ class SquadReader:
     @staticmethod
     def read(file_path: str, include_unanswerable_questions = False):
         with open(file_path) as dataset_file:
-            dataset_json = json.load(dataset_file)
+            dataset_json = rapidjson.load(dataset_file)
             dataset = dataset_json['data']
 
             for article in dataset:

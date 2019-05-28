@@ -8,6 +8,8 @@ import torch
 from torch.optim.lr_scheduler import CyclicLR
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
+import time
+import pickle
 
 from src.data.dataset.dataset import SquadDataset
 from src.data.dataset.datasetreaders import SquadReader
@@ -50,6 +52,8 @@ spacy_nlp = spacy.load("en_core_web_sm")
 spacy_tokenizer = SpacyTokenizer(spacy_nlp)
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+use_serialized_dataset: bool = True
 
 SquadTuple: NamedTuple = namedtuple('SquadTuple', ['question_tokens', 'passage_tokens', 'answer_start_index',
                                                    'answer_end_index', 'answer'])
@@ -159,7 +163,9 @@ embedding_index_for_unknown_words = torch.tensor([num_embeddings - 1], dtype = t
 
 words_to_index_dict = {key: index for index, key in enumerate(fasttext_vectors_as_ordered_dict.keys())}
 
+print("loading dataset...., time = " + str(time.time()))
 train_dataset = get_squad_dataset_from_file(training_data_file_path)
+print("dataset loaded...., time = " + str(time.time()))
 
 train_dataloader = DataLoader(train_dataset, batch_size = BATCH_SIZE, collate_fn = collate_with_padding, shuffle = True)
 
@@ -220,7 +226,6 @@ with torch.no_grad():
             [instance.answer_start_and_end_index for instance in batch], dtype = torch.long)
         answer_start_indices_original, answer_end_indices_original = torch.chunk(answer_start_and_end_indices_original.to(device = device),
                                                                                  chunks = 2, dim = 1)
-
         start_index_loss = loss_function(start_index_outputs, answer_start_indices_original)
         end_index_loss = loss_function(end_index_outputs, answer_end_indices_original)
 
@@ -228,19 +233,22 @@ with torch.no_grad():
 
         if iteration_count % 10 == 0:
             print("test loss at iteration# " + str(iteration_count) + " = " + str(total_loss))
+            iteration_count += 1
 
         answer_start_indices_chosen_by_model = torch.squeeze(torch.topk(start_index_outputs, 1, dim = 1)[1])
         answer_end_indices_chosen_by_model = torch.squeeze(torch.topk(end_index_outputs, 1, dim = 1)[1])
 
-        answer_start_index_comparison_tensor = torch.eq(answer_start_indices_original,
+        # torch.squeeze is used to make sure original indices matrices are squeezed to dimension (N)
+        # as opposed to (N, 1) as answer_indices_chosen_by_model are vectors of size (N) due to which
+        # a comparison with a matrix of size (N, 1) confuses torch.topk making ir return incorrect results
+        answer_start_index_comparison_tensor = torch.eq(torch.squeeze(answer_start_indices_original),
                                                         answer_start_indices_chosen_by_model)
-        answer_end_index_comparison_tensor = torch.eq(answer_end_indices_original,
+        answer_end_index_comparison_tensor = torch.eq(torch.squeeze(answer_end_indices_original),
                                                       answer_end_indices_chosen_by_model)
 
         num_correct_start_index_answers += answer_start_index_comparison_tensor.sum().item()
         num_correct_end_index_answers += answer_end_index_comparison_tensor.sum().item()
-        total_answers += (answer_start_indices_chosen_by_model.size()[0] if
-                          answer_start_indices_chosen_by_model.dim() > 0 else 1)
+        total_answers += len(batch)
 
 print("start index accuracy: " + str(num_correct_start_index_answers / total_answers))
 print("end index accuracy: " + str(num_correct_end_index_answers / total_answers))
