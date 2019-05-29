@@ -5,3 +5,4 @@ dev-v2.0.json
 train-v2.0.json
 data/squad_serialized
 squad_dataset_copy
+saved_models
