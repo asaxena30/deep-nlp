@@ -5,7 +5,6 @@ from typing import List, NamedTuple
 
 import spacy
 import torch
-from torch.optim.lr_scheduler import CyclicLR
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
 import time
@@ -14,20 +13,31 @@ import pickle
 from src.data.dataset.dataset import SquadDataset
 from src.data.dataset.datasetreaders import SquadReader
 from src.data.instance.instance import QAInstanceWithAnswerSpan
-from src.modules.question_answering_modules import QAModuleWithAttentionNoBert2
+from src.modules.question_answering_modules import QAModuleWithAttentionNoBert
 from src.tokenization.tokenizers import SpacyTokenizer
 from src.util import datasetutils
 
 dataset_data_file_path: str = "../../data/SQuAD"
+serialized_dataset_file_path: str = "../../data/squad_serialized"
+
+# can be turned to true once you have the training dataset pickled. Setting this to true and making sure
+# the serialized_dataset_file_path, serialized_training_data_file_path and serialized_dev_data_file_path are
+# accurate should make sure the training/dev datasets are loaded from the correct location
+use_serialized_datasets: bool = False
 
 # training_data_file_path: str = dataset_data_file_path + "/train-v2.0.json"
+# dev_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
+
+# training_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
 # dev_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
 
 training_data_file_path: str = dataset_data_file_path + "/sample.json"
 dev_data_file_path: str = dataset_data_file_path + "/sample.json"
 
-# training_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
-# dev_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
+serialized_training_data_file_path: str = serialized_dataset_file_path + "/squad_dataset_train"
+serialized_dev_data_file_path: str = serialized_dataset_file_path + "/squad_dataset_dev"
+
+
 
 
 # the number of epochs to train the model for
@@ -140,14 +150,10 @@ def get_squad_dataset_from_file(file_path: str) -> SquadDataset:
     return SquadDataset(sorted(squad_dataset_list, key = lambda x: x.total_length))
 
 
-# note the additional zeros Tensor. This is done to assign an embedding of torch.zeros(300) to unknown words. Since the
-# embedding is trainable, we expect this to change as training progresses
-# embedding = torch.nn.Embedding(embedding_dim = 300, num_embeddings = num_embeddings,
-#                                _weight = torch.cat([val.unsqueeze(dim = 0) for val in fasttext_vectors_as_ordered_dict.values()] +
-#                                                                    [torch.zeros((1, 300))], 0))
-# embedding_index_for_unknown_words = torch.tensor([num_embeddings - 1], dtype = torch.long)
-#
-# print(embedding[embedding_index_for_unknown_words])
+def load_serialized_dataset(datafile_path: str) -> SquadDataset:
+    with open(datafile_path, "rb") as f:
+        return pickle.load(f)
+
 
 embedding_weights = torch.cat([val.unsqueeze(dim = 0) for val in fasttext_vectors_as_ordered_dict.values()] +
                               [torch.zeros(1, 300)])
@@ -159,26 +165,26 @@ embedding = torch.nn.Embedding(embedding_dim = WORD_EMBEDDING_SIZE, num_embeddin
 
 embedding_index_for_unknown_words = torch.tensor([num_embeddings - 1], dtype = torch.long)
 
-# print(embedding(embedding_index_for_unknown_words))
-
 words_to_index_dict = {key: index for index, key in enumerate(fasttext_vectors_as_ordered_dict.keys())}
 
-print("loading dataset...., time = " + str(time.time()))
-train_dataset = get_squad_dataset_from_file(training_data_file_path)
-print("dataset loaded...., time = " + str(time.time()))
+print("loading training dataset...., time = " + str(time.time()))
+train_dataset = load_serialized_dataset(serialized_training_data_file_path) if use_serialized_datasets else\
+    get_squad_dataset_from_file(training_data_file_path)
+print("train dataset loaded, time = " + str(time.time()))
 
 train_dataloader = DataLoader(train_dataset, batch_size = BATCH_SIZE, collate_fn = collate_with_padding, shuffle = True)
 
-qa_module = QAModuleWithAttentionNoBert2(embedding, token_to_index_dict = words_to_index_dict,
-                                         embedding_index_for_unknown_words = num_embeddings - 1, device = device)
+qa_module = QAModuleWithAttentionNoBert(embedding, token_to_index_dict = words_to_index_dict,
+                                        embedding_index_for_unknown_words = num_embeddings - 1, device = device)
 
 qa_module.to(device = device)
 loss_function = torch.nn.CrossEntropyLoss()
 
 num_train_iterations = NUM_EPOCHS * math.ceil(len(train_dataset) / BATCH_SIZE)
 
-# optimizer = BertAdam(qa_module.parameters(), lr = 5e-5, warmup = 0.1, t_total = num_train_iterations)
 optimizer = torch.optim.Adam(qa_module.parameters(), lr = 5e-3)
+
+# cyclic LR doesn't work with Adam for pytorch 1.1 due to a pytorch bug. also, cyclic LR may not play well with adaptive leanring rates
 # scheduler = CyclicLR(optimizer, base_lr = 3e-5, max_lr = 0.01, step_size_up = 10, step_size_down = 90, cycle_momentum = False)
 
 iteration_count: int = 0
@@ -210,7 +216,8 @@ qa_module.eval()
 
 torch.cuda.empty_cache()
 
-test_dataset = get_squad_dataset_from_file(dev_data_file_path)
+test_dataset = load_serialized_dataset(serialized_dev_data_file_path) if use_serialized_datasets else\
+    get_squad_dataset_from_file(dev_data_file_path)
 test_dataloader = DataLoader(test_dataset, batch_size = BATCH_SIZE, collate_fn = collate_with_padding)
 
 num_correct_start_index_answers: int = 0
@@ -253,3 +260,5 @@ with torch.no_grad():
 print("start index accuracy: " + str(num_correct_start_index_answers / total_answers))
 print("end index accuracy: " + str(num_correct_end_index_answers / total_answers))
 print("total answers: " + str(total_answers))
+
+torch.save(qa_module.state_dict(), "./qa_module")
