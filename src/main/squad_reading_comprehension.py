@@ -1,4 +1,5 @@
 import math
+import collections
 from collections import namedtuple
 from typing import Dict
 from typing import List, NamedTuple
@@ -13,9 +14,10 @@ import pickle
 from src.data.dataset.dataset import SquadDataset
 from src.data.dataset.datasetreaders import SquadReader
 from src.data.instance.instance import QAInstanceWithAnswerSpan
-from src.modules.question_answering_modules import QAModuleWithAttentionNoBert
-from src.tokenization.tokenizers import SpacyTokenizer
+from src.modules.question_answering_modules import QAModuleWithAttentionNoBert4
+from src.util.vector_encoding_utils import build_index_tensor_for_tokenized_sentences
 from src.util import datasetutils
+from nltk.tokenize import word_tokenize
 
 dataset_data_file_path: str = "../../data/SQuAD"
 serialized_dataset_file_path: str = "../../data/squad_serialized"
@@ -25,10 +27,11 @@ serialized_dataset_file_path: str = "../../data/squad_serialized"
 # accurate should make sure the training/dev datasets are loaded from the correct location
 use_serialized_datasets: bool = False
 
-# training_data_file_path: str = dataset_data_file_path + "/train-v2.0.json"
-# dev_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
+use_serialized_model: bool = False
+skip_model_training: bool = True
+serialized_model_file_path = "../../saved_models/qa_module"
 
-# training_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
+# training_data_file_path: str = dataset_data_file_path + "/train-v2.0.json"
 # dev_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
 
 training_data_file_path: str = dataset_data_file_path + "/sample.json"
@@ -37,15 +40,12 @@ dev_data_file_path: str = dataset_data_file_path + "/sample.json"
 serialized_training_data_file_path: str = serialized_dataset_file_path + "/squad_dataset_train"
 serialized_dev_data_file_path: str = serialized_dataset_file_path + "/squad_dataset_dev"
 
-
-
-
 # the number of epochs to train the model for
 NUM_EPOCHS: int = 2
 
 # batch size to use for training. The default can be kept small when using gradient accumulation. However, if
 # use_gradient_accumulation were to be False, it's best to use a reasonably large batch size
-BATCH_SIZE: int = 50
+BATCH_SIZE: int = 5
 
 WORD_EMBEDDING_SIZE = 300
 
@@ -59,11 +59,8 @@ answer_start_marker_with_spaces: str = " %s " % answer_start_marker
 answer_end_marker_with_spaces: str = " %s " % answer_end_marker
 
 spacy_nlp = spacy.load("en_core_web_sm")
-spacy_tokenizer = SpacyTokenizer(spacy_nlp)
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
-use_serialized_dataset: bool = True
 
 SquadTuple: NamedTuple = namedtuple('SquadTuple', ['question_tokens', 'passage_tokens', 'answer_start_index',
                                                    'answer_end_index', 'answer'])
@@ -117,8 +114,11 @@ def get_squad_dataset_from_file(file_path: str) -> SquadDataset:
                                         span_start_char_index: span_end_char_index] + answer_end_marker_with_spaces + \
                                         passage_text[span_end_char_index:]
 
-        passage_tokens = spacy_tokenizer.tokenize(passage_text_for_tokenization)
-        question_tokens = spacy_tokenizer.tokenize(squad_qa_instance_as_dict['question'])
+        # passage_tokens = spacy_tokenizer.tokenize(passage_text_for_tokenization)
+        # question_tokens = spacy_tokenizer.tokenize(squad_qa_instance_as_dict['question'])
+
+        passage_tokens = word_tokenize(passage_text_for_tokenization)
+        question_tokens = word_tokenize(squad_qa_instance_as_dict['question'])
 
         answer_start_marker_index = passage_tokens.index(answer_start_marker)
         answer_end_marker_index = passage_tokens.index(answer_end_marker)
@@ -155,6 +155,26 @@ def load_serialized_dataset(datafile_path: str) -> SquadDataset:
         return pickle.load(f)
 
 
+def calculate_loss_scaling_factor(original_start_indices, original_end_indices,
+                                  model_start_index_scores, model_end_index_scores):
+    start_indices_from_model = torch.max(model_start_index_scores, dim = 1)[1]
+    end_indices_from_model = torch.max(model_end_index_scores, dim = 1)[1]
+
+    lower_index_max = torch.max(original_start_indices, start_indices_from_model)
+    upper_index_min = torch.min(original_end_indices, end_indices_from_model)
+
+    # note: we need this code to work with pytorch 1.0 which is why the older version of
+    # clamp is being used which forces specifying both a min and max. The max value here is artificial and specific
+    # to this dataset
+    overlap_range_length_tensor = torch.clamp(upper_index_min - lower_index_max + 1, min = 0, max = 10000)
+
+    original_answer_length_tensor = original_end_indices - original_start_indices + 1
+    model_answer_length_tensor = torch.abs(end_indices_from_model - start_indices_from_model) + 1
+
+    # basically 1 - 2 * overlap_range_length/(actual_answer_length + model_answer_length)
+    return 1 - torch.mean(torch.div(2 * overlap_range_length_tensor.float(), (original_answer_length_tensor + model_answer_length_tensor).float()))
+
+
 embedding_weights = torch.cat([val.unsqueeze(dim = 0) for val in fasttext_vectors_as_ordered_dict.values()] +
                               [torch.zeros(1, 300)])
 
@@ -168,53 +188,80 @@ embedding_index_for_unknown_words = torch.tensor([num_embeddings - 1], dtype = t
 words_to_index_dict = {key: index for index, key in enumerate(fasttext_vectors_as_ordered_dict.keys())}
 
 print("loading training dataset...., time = " + str(time.time()))
-train_dataset = load_serialized_dataset(serialized_training_data_file_path) if use_serialized_datasets else\
-    get_squad_dataset_from_file(training_data_file_path)
+# train_dataset = load_serialized_dataset(serialized_training_data_file_path) if use_serialized_datasets else\
+#     get_squad_dataset_from_file(training_data_file_path)
+
+# train_dataset = get_squad_dataset_from_file(training_data_file_path)
+
+train_dataset = load_serialized_dataset(serialized_training_data_file_path)
+
 print("train dataset loaded, time = " + str(time.time()))
 
 train_dataloader = DataLoader(train_dataset, batch_size = BATCH_SIZE, collate_fn = collate_with_padding, shuffle = True)
 
-qa_module = QAModuleWithAttentionNoBert(embedding, token_to_index_dict = words_to_index_dict,
-                                        embedding_index_for_unknown_words = num_embeddings - 1, device = device)
+# the method of feeding inputs to the module from #1  - #3 makes models incompatible with onnx
+# qa_module = QAModuleWithAttentionNoBert3(embedding, token_to_index_dict = words_to_index_dict,
+#                                         embedding_index_for_unknown_words = num_embeddings - 1, device = device)
+
+
+qa_module = QAModuleWithAttentionNoBert4(embedding, device = device)
+
+if use_serialized_model:
+    qa_module.load_state_dict(torch.load(serialized_model_file_path))
 
 qa_module.to(device = device)
 loss_function = torch.nn.CrossEntropyLoss()
 
 num_train_iterations = NUM_EPOCHS * math.ceil(len(train_dataset) / BATCH_SIZE)
+iteration_count: int = 0
+training_iteration_to_loss_dict = collections.OrderedDict()
+iteration_count_for_error_plot = num_train_iterations/10
 
 optimizer = torch.optim.Adam(qa_module.parameters(), lr = 5e-3)
 
-# cyclic LR doesn't work with Adam for pytorch 1.1 due to a pytorch bug. also, cyclic LR may not play well with adaptive leanring rates
-# scheduler = CyclicLR(optimizer, base_lr = 3e-5, max_lr = 0.01, step_size_up = 10, step_size_down = 90, cycle_momentum = False)
+if not skip_model_training:
+    for epoch in tqdm(range(NUM_EPOCHS)):
+        print("inside training loop")
+        for batch in train_dataloader:
+            qa_module.zero_grad()
 
-iteration_count: int = 0
+            question_batch_index_tensor: torch.Tensor = build_index_tensor_for_tokenized_sentences(
+                    tokenized_sentence_list = [instance.question for instance in batch],
+                    token_to_index_dict = words_to_index_dict,
+                    index_for_unknown_tokens = num_embeddings - 1).to(device = device)
 
-for epoch in tqdm(range(NUM_EPOCHS)):
-    print("inside training loop")
-    for batch in train_dataloader:
-        qa_module.zero_grad()
-        start_index_outputs, end_index_outputs = qa_module(batch)
+            passage_batch_index_tensor: torch.Tensor = build_index_tensor_for_tokenized_sentences(
+                    tokenized_sentence_list = [instance.passage for instance in batch],
+                    token_to_index_dict = words_to_index_dict,
+                    index_for_unknown_tokens = num_embeddings - 1).to(device = device)
 
-        answer_start_and_end_indices_original = torch.tensor([instance.answer_start_and_end_index for instance in batch], dtype = torch.long)
-        answer_start_indices_original, answer_end_indices_original = torch.chunk(answer_start_and_end_indices_original, chunks = 2, dim = 1)
+            start_index_outputs, end_index_outputs = qa_module(question_batch_index_tensor, passage_batch_index_tensor)
 
-        start_index_loss = loss_function(start_index_outputs, answer_start_indices_original.to(device = device))
-        end_index_loss = loss_function(end_index_outputs, answer_end_indices_original.to(device = device))
+            batch_start_and_end_indices = [instance.answer_start_and_end_index for instance in batch]
+            answer_start_and_end_indices_original = torch.tensor(batch_start_and_end_indices, dtype = torch.long)
 
-        total_loss = start_index_loss + end_index_loss
+            answer_start_indices_original, answer_end_indices_original = torch.chunk(answer_start_and_end_indices_original, chunks = 2, dim = 1)
 
-        if iteration_count % 10 == 0:
-            print(total_loss)
+            start_index_loss = loss_function(start_index_outputs, answer_start_indices_original.to(device = device))
+            end_index_loss = loss_function(end_index_outputs, answer_end_indices_original.to(device = device))
 
-        total_loss.backward()
-        # scheduler.step()
-        optimizer.step()
-        iteration_count += 1
+            total_loss = (start_index_loss + end_index_loss) * calculate_loss_scaling_factor(answer_start_indices_original, answer_end_indices_original, start_index_outputs, end_index_outputs)
+
+            if iteration_count % 10 == 0:
+                print(total_loss)
+
+            if iteration_count % iteration_count_for_error_plot == 0:
+                training_iteration_to_loss_dict[iteration_count] = total_loss.data.item()
+
+            total_loss.backward()
+            # scheduler.step()
+            optimizer.step()
+            iteration_count += 1
 
 
 qa_module.eval()
 
-torch.cuda.empty_cache()
+# torch.cuda.empty_cache()
 
 test_dataset = load_serialized_dataset(serialized_dev_data_file_path) if use_serialized_datasets else\
     get_squad_dataset_from_file(dev_data_file_path)
@@ -222,12 +269,31 @@ test_dataloader = DataLoader(test_dataset, batch_size = BATCH_SIZE, collate_fn =
 
 num_correct_start_index_answers: int = 0
 num_correct_end_index_answers: int = 0
+num_answers_with_both_indices_correct: int = 0
 total_answers: int = 0
+
+test_iteration_to_loss_dict = collections.OrderedDict()
+
+num_test_iterations = math.ceil(len(test_dataset) / BATCH_SIZE)
+iteration_count_for_error_plot = num_test_iterations/10
+
+# reset the iteration count
+iteration_count = 0
 
 with torch.no_grad():
     for batch in test_dataloader:
 
-        start_index_outputs, end_index_outputs = qa_module(batch)
+        question_batch_index_tensor: torch.Tensor = build_index_tensor_for_tokenized_sentences(
+            tokenized_sentence_list = [instance.question for instance in batch],
+            token_to_index_dict = words_to_index_dict,
+            index_for_unknown_tokens = num_embeddings - 1).to(device = device)
+
+        passage_batch_index_tensor: torch.Tensor = build_index_tensor_for_tokenized_sentences(
+            tokenized_sentence_list = [instance.passage for instance in batch],
+            token_to_index_dict = words_to_index_dict,
+            index_for_unknown_tokens = num_embeddings - 1).to(device = device)
+
+        start_index_outputs, end_index_outputs = qa_module(question_batch_index_tensor, passage_batch_index_tensor)
 
         answer_start_and_end_indices_original = torch.tensor(
             [instance.answer_start_and_end_index for instance in batch], dtype = torch.long)
@@ -238,16 +304,24 @@ with torch.no_grad():
 
         total_loss = start_index_loss + end_index_loss
 
+        original_answers_with_answers_inferred_from_indices = [(instance.answer,
+                                                                instance.passage[instance.answer_start_and_end_index[0]:
+                                                                                 instance.answer_start_and_end_index[1] + 1])
+                                                               for instance in batch]
+
+        print(original_answers_with_answers_inferred_from_indices)
+
         if iteration_count % 10 == 0:
             print("test loss at iteration# " + str(iteration_count) + " = " + str(total_loss))
-            iteration_count += 1
+
+        iteration_count += 1
 
         answer_start_indices_chosen_by_model = torch.squeeze(torch.topk(start_index_outputs, 1, dim = 1)[1])
         answer_end_indices_chosen_by_model = torch.squeeze(torch.topk(end_index_outputs, 1, dim = 1)[1])
 
         # torch.squeeze is used to make sure original indices matrices are squeezed to dimension (N)
         # as opposed to (N, 1) as answer_indices_chosen_by_model are vectors of size (N) due to which
-        # a comparison with a matrix of size (N, 1) confuses torch.topk making ir return incorrect results
+        # a comparison with a matrix of size (N, 1) confuses torch.topk making it return incorrect results
         answer_start_index_comparison_tensor = torch.eq(torch.squeeze(answer_start_indices_original),
                                                         answer_start_indices_chosen_by_model)
         answer_end_index_comparison_tensor = torch.eq(torch.squeeze(answer_end_indices_original),
@@ -257,8 +331,56 @@ with torch.no_grad():
         num_correct_end_index_answers += answer_end_index_comparison_tensor.sum().item()
         total_answers += len(batch)
 
+        # print(answer_end_index_comparison_tensor)
+
+        # let's replace the 0s in one of the comparison tensors by -1, this makes sure when we calculate
+        # which examples we got both indices correct for, we don't consider the ones that have 0 in both
+        # the comparison tensors
+        answer_end_index_comparison_tensor[answer_end_index_comparison_tensor == 0] = 2
+
+        # print(answer_end_index_comparison_tensor)
+
+        # now this should only count the values for which both answers are correct
+        num_answers_with_both_indices_correct += torch.eq(answer_start_index_comparison_tensor,
+                                                          answer_end_index_comparison_tensor).sum().item()
+
+        if iteration_count % iteration_count_for_error_plot == 0:
+            test_iteration_to_loss_dict[iteration_count] = total_loss.data.item()
+
+        # answers_from_instance = [instance.answer for instance in batch]
+        # answers_start_and_end_indices_chosen_by_model = zip(answer_start_indices_chosen_by_model.tolist(),
+        #                                                     answer_end_indices_chosen_by_model.tolist())
+        # answers_from_model_outputs = [" ".join(instance.passage[start_and_end_index[0]:start_and_end_index[1]] for start_and_end_index
+        #                                          in answers_start_and_end_indices_chosen_by_model for instance in batch)]
+        # print(answer_end_indices_chosen_by_model)
+        # print([instance.answer_start_and_end_index for instance in batch])
+        answer_start_indices_as_list = answer_start_indices_chosen_by_model.tolist()
+        answer_end_indices_as_list = answer_end_indices_chosen_by_model.tolist()
+
+        # this verified that the answers indeed correct
+        # for idx in range(len(batch)):
+        #     instance = batch[idx]
+        #     print("answer = " + str(instance.answer))
+        #     print(instance.passage[answer_start_indices_as_list[idx]:answer_end_indices_as_list[idx] + 1])
+
+
 print("start index accuracy: " + str(num_correct_start_index_answers / total_answers))
 print("end index accuracy: " + str(num_correct_end_index_answers / total_answers))
+print("exact match accuracy: " + str(num_answers_with_both_indices_correct/total_answers))
 print("total answers: " + str(total_answers))
 
-torch.save(qa_module.state_dict(), "./qa_module")
+# test_loss_values_ordered = test_iteration_to_loss_dict.values()
+# plt.plot(test_iteration_to_loss_dict.keys(), test_loss_values_ordered)
+# plt.xlabel("test_step_num")
+# plt.ylabel("test_loss")
+# plt.show()
+
+# visualization
+# sample_input = test_dataset[0:2]
+# sample_output = qa_module(sample_input)
+# make_dot(sample_output, params = dict(qa_module.named_parameters()))
+dummy_question_batch_input = torch.randint(low = 0, high = 12, size = (2, 12), device = device)
+dummy_passage_batch_input = torch.randint(low = 0, high = 200, size = (2, 200), device = device)
+
+# torch.onnx.export(model = qa_module, args = (dummy_question_batch_input, dummy_passage_batch_input), f = "./qa_module3.onnx", verbose = True)
+# torch.save(qa_module.state_dict(), "./qa_module")

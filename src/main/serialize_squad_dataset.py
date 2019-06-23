@@ -1,19 +1,14 @@
-import math
 from collections import namedtuple
-from typing import Dict
 from typing import List, NamedTuple
 
-import spacy
-import torch
 import time
 import pickle
 
 from src.data.dataset.dataset import SquadDataset
 from src.data.dataset.datasetreaders import SquadReader
 from src.data.instance.instance import QAInstanceWithAnswerSpan
-from src.tokenization.tokenizers import SpacyTokenizer
-from src.util import datasetutils
 from torch.utils.data.dataloader import DataLoader
+from nltk.tokenize import word_tokenize
 
 
 dataset_data_file_path: str = "../../data/SQuAD"
@@ -33,13 +28,11 @@ answer_end_marker = "ß"
 answer_start_marker_with_spaces: str = " %s " % answer_start_marker
 answer_end_marker_with_spaces: str = " %s " % answer_end_marker
 
-spacy_nlp = spacy.load("en_core_web_sm")
-spacy_tokenizer = SpacyTokenizer(spacy_nlp)
-
 SquadTuple: NamedTuple = namedtuple('SquadTuple', ['question_tokens', 'passage_tokens', 'answer_start_index',
                                                    'answer_end_index', 'answer'])
 
-BATCH_SIZE: int = 50
+BATCH_SIZE: int = 10
+
 
 def collate_with_padding(batch):
     if not isinstance(batch[0], QAInstanceWithAnswerSpan):
@@ -89,8 +82,8 @@ def get_squad_dataset_from_file(file_path: str) -> SquadDataset:
                                         span_start_char_index: span_end_char_index] + answer_end_marker_with_spaces + \
                                         passage_text[span_end_char_index:]
 
-        passage_tokens = spacy_tokenizer.tokenize(passage_text_for_tokenization)
-        question_tokens = spacy_tokenizer.tokenize(squad_qa_instance_as_dict['question'])
+        passage_tokens = word_tokenize(passage_text_for_tokenization)
+        question_tokens = word_tokenize(squad_qa_instance_as_dict['question'])
 
         answer_start_marker_index = passage_tokens.index(answer_start_marker)
         answer_end_marker_index = passage_tokens.index(answer_end_marker)
@@ -120,11 +113,12 @@ def get_squad_dataset_from_file(file_path: str) -> SquadDataset:
 
 print("loading dataset...., time = " + str(time.time()))
 # train_dataset = get_squad_dataset_from_file(training_data_file_path)
-dataset = get_squad_dataset_from_file(dev_data_file_path)
-with open("./squad_dataset_dev", "wb+") as f:
-    pickle.dump(dataset, f)
+# dataset = get_squad_dataset_from_file(dev_data_file_path)
+# with open("./squad_dataset_dev", "wb+") as f:
+#     pickle.dump(dataset, f)
 
-with open("./squad_dataset_dev", "rb") as f:
+dataset = None
+with open("../../data/squad_serialized/squad_dataset_dev", "rb") as f:
     dataset = pickle.load(f)
 
 print("dataset loaded...., time = " + str(time.time()))
@@ -139,3 +133,5 @@ for batch in dataloader:
     if iteration_count == 1:
         print(batch)
     iteration_count += 1
+
+print(iteration_count)
