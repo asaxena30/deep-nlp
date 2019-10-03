@@ -3,13 +3,29 @@ from typing import List, Tuple
 
 
 class QAInstanceWithAnswerSpan:
-    def __init__(self, question: List[str], passage: List[str], answer: str, answer_start_and_end_index: Tuple[int, int],
+    def __init__(self, question: List[str],  passage: List[str], answer: str, answer_start_and_end_index: Tuple[int, int],
                  total_length: int):
         self.question = question
         self.passage = passage
         self.answer = answer
         self.answer_start_and_end_index = answer_start_and_end_index
         self.total_length = total_length
+
+    def __str__(self):
+        return "passage = " + str(self.passage) + ", question = " + str(self.question), + " answer = " + self.answer + \
+               ", answer indices = " + str(self.answer_start_and_end_index)
+
+
+class TaggedQAInstanceWithAnswerSpan(QAInstanceWithAnswerSpan):
+    def __init__(self, question: List[str], question_pos_tags: List[str], passage: List[str],
+                 passage_pos_tags: List[str], answer: str, answer_start_and_end_index: Tuple[int, int],
+                 total_length: int):
+        super().__init__(question, passage, answer, answer_start_and_end_index, total_length)
+        self.question_pos_tags = question_pos_tags
+        self.passage_pos_tags = passage_pos_tags
+
+    def __str__(self):
+        return super().__str__() + ", passage_pos_tags = " + str(self.passage_pos_tags) + ", question_pos_tags = " + str(self.question_pos_tags)
 
 
 class QATensorInstanceWithAnswerSpan:

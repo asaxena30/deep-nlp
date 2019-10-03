@@ -1,5 +1,4 @@
 from typing import List
-import json
 from src.errors.custom_errors import UnsupportedOperationError
 import rapidjson
 

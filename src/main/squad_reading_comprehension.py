@@ -1,10 +1,7 @@
 import math
 import collections
-from collections import namedtuple
-from typing import Dict
-from typing import List, NamedTuple
+from typing import Dict, List
 
-import spacy
 import torch
 from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
@@ -14,9 +11,10 @@ import pickle
 from src.data.dataset.dataset import SquadDataset
 from src.data.dataset.datasetreaders import SquadReader
 from src.data.instance.instance import QAInstanceWithAnswerSpan
-from src.modules.question_answering_modules import QAModuleWithAttentionNoBert4
+from src.modules.question_answering_modules import QAModuleWithGuidedSelfAttention, \
+    QAModuleWithAttentionLarge, QAModuleWithAttentionSmallerPassageRep
 from src.util.vector_encoding_utils import build_index_tensor_for_tokenized_sentences
-from src.util import datasetutils
+from src.util import vector_encoding_utils
 from nltk.tokenize import word_tokenize
 
 dataset_data_file_path: str = "../../data/SQuAD"
@@ -26,10 +24,10 @@ serialized_dataset_file_path: str = "../../data/squad_serialized"
 # the serialized_dataset_file_path, serialized_training_data_file_path and serialized_dev_data_file_path are
 # accurate should make sure the training/dev datasets are loaded from the correct location
 use_serialized_datasets: bool = False
-
 use_serialized_model: bool = False
+
 skip_model_training: bool = True
-serialized_model_file_path = "../../saved_models/qa_module"
+
 
 # training_data_file_path: str = dataset_data_file_path + "/train-v2.0.json"
 # dev_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"
@@ -37,8 +35,12 @@ serialized_model_file_path = "../../saved_models/qa_module"
 training_data_file_path: str = dataset_data_file_path + "/sample.json"
 dev_data_file_path: str = dataset_data_file_path + "/sample.json"
 
+
 serialized_training_data_file_path: str = serialized_dataset_file_path + "/squad_dataset_train"
 serialized_dev_data_file_path: str = serialized_dataset_file_path + "/squad_dataset_dev"
+
+serialized_model_file_path = "../../saved_models/qa_module"
+
 
 # the number of epochs to train the model for
 NUM_EPOCHS: int = 2
@@ -49,8 +51,13 @@ BATCH_SIZE: int = 5
 
 WORD_EMBEDDING_SIZE = 300
 
-fasttext_file_path: str = "/Users/asaxena/Downloads/fasttext_300d/fasttext-300d.vec"
-fasttext_vectors_as_ordered_dict: Dict[str, torch.Tensor] = datasetutils.load_word_vectors_as_ordered_dict(fasttext_file_path, expected_embedding_size = WORD_EMBEDDING_SIZE)
+# fasttext_file_path: str = "/Users/asaxena/Downloads/fasttext_300d/fasttext-300d.vec"
+# fasttext_vectors_as_ordered_dict: Dict[str, torch.Tensor] = datasetutils.load_word_vectors_as_ordered_dict(fasttext_file_path, expected_embedding_size = WORD_EMBEDDING_SIZE)
+
+fasttext_vectors_as_ordered_dict: Dict[str, torch.Tensor] = None
+
+with open("../../data/pickled/embedding_dicts/fasttext_serialized/fasttext_word_vectors_enhanced", "rb") as f:
+    fasttext_vectors_as_ordered_dict = pickle.load(f)
 
 answer_start_marker = "π"
 answer_end_marker = "ß"
@@ -58,24 +65,24 @@ answer_end_marker = "ß"
 answer_start_marker_with_spaces: str = " %s " % answer_start_marker
 answer_end_marker_with_spaces: str = " %s " % answer_end_marker
 
-spacy_nlp = spacy.load("en_core_web_sm")
-
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-SquadTuple: NamedTuple = namedtuple('SquadTuple', ['question_tokens', 'passage_tokens', 'answer_start_index',
-                                                   'answer_end_index', 'answer'])
+universal_pos_tagset = ['ADJ', 'ADP', 'ADV', 'CONJ', 'DET', 'NOUN', 'NUM', 'PRON', 'PRT', 'VERB', '.', 'X', 'UNK']
+null_tag_tensor = torch.zeros((1, 1, len(universal_pos_tagset)))
+
+pos_tags_to_tensor_dict: Dict[str, torch.Tensor] = vector_encoding_utils.build_one_hot_encoded_tensors_for_tags(universal_pos_tagset)
 
 
 def collate_with_padding(batch):
     if not isinstance(batch[0], QAInstanceWithAnswerSpan):
-        raise NotImplementedError("only a QAInstanceWithAnswerSpan is supported for this class")
+        raise NotImplementedError("only a QAInstanceWithAnswerSpan/subclass is supported")
 
     max_question_length_instance = max(batch, key = lambda batch_item: len(batch_item.question))
     max_question_length = len(max_question_length_instance.question)
 
     max_passage_length_instance = max(batch, key = lambda batch_item: len(batch_item.passage))
     max_passage_length = len(max_passage_length_instance.passage)
-    batches = []
+    new_batch = []
 
     for instance in batch:
         instance_question_length = len(instance.question)
@@ -83,15 +90,15 @@ def collate_with_padding(batch):
         instance.question = instance.question + ['pad'] * question_padding_size
 
         instance_passage_length = len(instance.passage)
-        instance_padding_size = max_passage_length - instance_passage_length
-        instance.passage = instance.passage + ['pad'] * instance_padding_size
+        passage_padding_size = max_passage_length - instance_passage_length
+        instance.passage = instance.passage + ['pad'] * passage_padding_size
 
         # batch_as_tuples.append(
         #     SquadTuple(instance.question, instance.passage, instance.answer_start_and_end_index[0],
         #                instance.answer_start_and_end_index[1],
         #                instance.answer))
-        batches.append(instance)
-    return batches
+        new_batch.append(instance)
+    return new_batch
 
 
 def get_squad_dataset_from_file(file_path: str) -> SquadDataset:
@@ -114,9 +121,6 @@ def get_squad_dataset_from_file(file_path: str) -> SquadDataset:
                                         span_start_char_index: span_end_char_index] + answer_end_marker_with_spaces + \
                                         passage_text[span_end_char_index:]
 
-        # passage_tokens = spacy_tokenizer.tokenize(passage_text_for_tokenization)
-        # question_tokens = spacy_tokenizer.tokenize(squad_qa_instance_as_dict['question'])
-
         passage_tokens = word_tokenize(passage_text_for_tokenization)
         question_tokens = word_tokenize(squad_qa_instance_as_dict['question'])
 
@@ -136,7 +140,8 @@ def get_squad_dataset_from_file(file_path: str) -> SquadDataset:
 
         answer_indices = (answer_span_start_token_index, answer_span_end_token_index)
 
-        instance = QAInstanceWithAnswerSpan(question = question_tokens, passage = passage_tokens,
+        instance = QAInstanceWithAnswerSpan(question = question_tokens,
+                                            passage = passage_tokens,
                                             answer = squad_qa_instance_as_dict['answer'],
                                             answer_start_and_end_index = answer_indices,
                                             total_length = len(question_tokens + passage_tokens))
@@ -175,8 +180,16 @@ def calculate_loss_scaling_factor(original_start_indices, original_end_indices,
     return 1 - torch.mean(torch.div(2 * overlap_range_length_tensor.float(), (original_answer_length_tensor + model_answer_length_tensor).float()))
 
 
-embedding_weights = torch.cat([val.unsqueeze(dim = 0) for val in fasttext_vectors_as_ordered_dict.values()] +
-                              [torch.zeros(1, 300)])
+def print_word_vector(passage_tokens):
+
+    for token in passage_tokens:
+        if token not in fasttext_vectors_as_ordered_dict:
+            print("word = " + token + " not found")
+
+
+zero_embedding_unsqueezed = torch.zeros(1, 300)
+embedding_weights = torch.cat([val.unsqueeze(dim = 0) if type(val) == torch.Tensor else zero_embedding_unsqueezed for val in fasttext_vectors_as_ordered_dict.values()] +
+                              [zero_embedding_unsqueezed])
 
 num_embeddings = embedding_weights.shape[0]
 
@@ -188,12 +201,8 @@ embedding_index_for_unknown_words = torch.tensor([num_embeddings - 1], dtype = t
 words_to_index_dict = {key: index for index, key in enumerate(fasttext_vectors_as_ordered_dict.keys())}
 
 print("loading training dataset...., time = " + str(time.time()))
-# train_dataset = load_serialized_dataset(serialized_training_data_file_path) if use_serialized_datasets else\
-#     get_squad_dataset_from_file(training_data_file_path)
-
-# train_dataset = get_squad_dataset_from_file(training_data_file_path)
-
-train_dataset = load_serialized_dataset(serialized_training_data_file_path)
+train_dataset = load_serialized_dataset(serialized_training_data_file_path) if use_serialized_datasets else\
+    get_squad_dataset_from_file(training_data_file_path)
 
 print("train dataset loaded, time = " + str(time.time()))
 
@@ -204,7 +213,7 @@ train_dataloader = DataLoader(train_dataset, batch_size = BATCH_SIZE, collate_fn
 #                                         embedding_index_for_unknown_words = num_embeddings - 1, device = device)
 
 
-qa_module = QAModuleWithAttentionNoBert4(embedding, device = device)
+qa_module = QAModuleWithAttentionSmallerPassageRep(embedding, device = device)
 
 if use_serialized_model:
     qa_module.load_state_dict(torch.load(serialized_model_file_path))
@@ -219,10 +228,17 @@ iteration_count_for_error_plot = num_train_iterations/10
 
 optimizer = torch.optim.Adam(qa_module.parameters(), lr = 5e-3)
 
+# lr_scheduler = torch.optim.lr_scheduler.CyclicLR(optimizer, base_lr = 1e-6, max_lr = 1e-2, step_size_up=10,
+#                                                  step_size_down=30)
+
+lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size = 1, gamma = 0.1)
+
 if not skip_model_training:
     for epoch in tqdm(range(NUM_EPOCHS)):
         print("inside training loop")
+        lr_scheduler.step()
         for batch in train_dataloader:
+
             qa_module.zero_grad()
 
             question_batch_index_tensor: torch.Tensor = build_index_tensor_for_tokenized_sentences(
@@ -282,6 +298,9 @@ iteration_count = 0
 
 with torch.no_grad():
     for batch in test_dataloader:
+
+        for instance in batch:
+            print_word_vector(instance.passage)
 
         question_batch_index_tensor: torch.Tensor = build_index_tensor_for_tokenized_sentences(
             tokenized_sentence_list = [instance.question for instance in batch],
@@ -381,6 +400,10 @@ print("total answers: " + str(total_answers))
 # make_dot(sample_output, params = dict(qa_module.named_parameters()))
 dummy_question_batch_input = torch.randint(low = 0, high = 12, size = (2, 12), device = device)
 dummy_passage_batch_input = torch.randint(low = 0, high = 200, size = (2, 200), device = device)
+
+#
+# with SummaryWriter(comment='QAModule') as summaryWriter:
+#     summaryWriter.add_graph(qa_module, (dummy_question_batch_input, dummy_passage_batch_input), True)
 
 # torch.onnx.export(model = qa_module, args = (dummy_question_batch_input, dummy_passage_batch_input), f = "./qa_module3.onnx", verbose = True)
 # torch.save(qa_module.state_dict(), "./qa_module")
