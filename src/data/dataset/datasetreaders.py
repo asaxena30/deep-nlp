@@ -2,6 +2,7 @@ from typing import List
 from src.errors.custom_errors import UnsupportedOperationError
 import rapidjson
 
+
 class Conll2003Reader:
     def __init__(self, filepaths: List[str]):
         super().__init__()
@@ -37,8 +38,7 @@ class SquadReader:
     @staticmethod
     def read(file_path: str, include_unanswerable_questions = False):
         with open(file_path) as dataset_file:
-            dataset_json = rapidjson.load(dataset_file)
-            dataset = dataset_json['data']
+            dataset = SquadReader.extract_dataset(dataset_file)
 
             for article in dataset:
                 for paragraph_json in article['paragraphs']:
@@ -48,19 +48,26 @@ class SquadReader:
                         if include_unanswerable_questions:
                             raise UnsupportedOperationError("no support for unanswerable questions yet")
                         question_text = SquadReader.correct_known_typos(question_answer["question"].strip().replace("\n", ""))
-                        answer_texts = [answer['text'] for answer in question_answer['answers']]
+                        all_answers = sorted(question_answer['answers'], key = lambda ans: len(ans['text']))
+                        answer_texts = [answer['text'] for answer in all_answers]
 
                         # effectively, no answers means it's an unanswerable question which isn't supported yet
                         if not answer_texts:
                             continue
 
-                        span_starts = [answer['answer_start'] for answer in question_answer['answers']]
+                        span_starts = [answer['answer_start'] for answer in all_answers]
                         span_ends = [start + len(answer) for start, answer in zip(span_starts, answer_texts)]
-                        yield {"passage": paragraph,
+                        yield {"id": question_answer["id"],
+                               "passage": paragraph,
                                "question": question_text,
                                "answer": answer_texts[0],
                                "span_start": span_starts[0],
                                "span_end": span_ends[0]}
+
+    @staticmethod
+    def extract_dataset(dataset_file):
+        dataset_json = rapidjson.load(dataset_file)
+        return dataset_json['data']
 
     @staticmethod
     def correct_known_typos(question_or_passage_text: str):

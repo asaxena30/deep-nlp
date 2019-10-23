@@ -3,13 +3,14 @@ from typing import List, Tuple
 
 
 class QAInstanceWithAnswerSpan:
-    def __init__(self, question: List[str],  passage: List[str], answer: str, answer_start_and_end_index: Tuple[int, int],
-                 total_length: int):
+    def __init__(self, question: List[str], passage: List[str], answer: str, answer_start_and_end_index: Tuple[int, int],
+                 total_length: int, id: str = None):
         self.question = question
         self.passage = passage
         self.answer = answer
         self.answer_start_and_end_index = answer_start_and_end_index
         self.total_length = total_length
+        self.id = id
 
     def __str__(self):
         return "passage = " + str(self.passage) + ", question = " + str(self.question), + " answer = " + self.answer + \

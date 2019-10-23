@@ -7,12 +7,13 @@ from torch.utils.data.dataloader import DataLoader
 from tqdm import tqdm
 import time
 import pickle
+import pdb
 
 from src.data.dataset.dataset import SquadDataset
 from src.data.dataset.datasetreaders import SquadReader
 from src.data.instance.instance import QAInstanceWithAnswerSpan
 from src.modules.question_answering_modules import QAModuleWithGuidedSelfAttention, \
-    QAModuleWithAttentionLarge, QAModuleWithAttentionSmallerPassageRep
+    QAModuleWithAttentionLarge
 from src.util.vector_encoding_utils import build_index_tensor_for_tokenized_sentences
 from src.util import vector_encoding_utils
 from nltk.tokenize import word_tokenize
@@ -26,7 +27,7 @@ serialized_dataset_file_path: str = "../../data/squad_serialized"
 use_serialized_datasets: bool = False
 use_serialized_model: bool = False
 
-skip_model_training: bool = True
+skip_model_training: bool = False
 
 
 # training_data_file_path: str = dataset_data_file_path + "/train-v2.0.json"
@@ -47,7 +48,7 @@ NUM_EPOCHS: int = 2
 
 # batch size to use for training. The default can be kept small when using gradient accumulation. However, if
 # use_gradient_accumulation were to be False, it's best to use a reasonably large batch size
-BATCH_SIZE: int = 5
+BATCH_SIZE: int = 1
 
 WORD_EMBEDDING_SIZE = 300
 
@@ -109,6 +110,7 @@ def get_squad_dataset_from_file(file_path: str) -> SquadDataset:
         if 'span_start' not in squad_qa_instance_as_dict:
             continue
 
+        qa_id: str = squad_qa_instance_as_dict["id"]
         span_start_char_index: int = squad_qa_instance_as_dict['span_start']
         span_end_char_index: int = squad_qa_instance_as_dict['span_end']
 
@@ -144,7 +146,8 @@ def get_squad_dataset_from_file(file_path: str) -> SquadDataset:
                                             passage = passage_tokens,
                                             answer = squad_qa_instance_as_dict['answer'],
                                             answer_start_and_end_index = answer_indices,
-                                            total_length = len(question_tokens + passage_tokens))
+                                            total_length = len(question_tokens + passage_tokens),
+                                            id = qa_id)
 
         squad_dataset_list.append(instance)
 
@@ -213,7 +216,7 @@ train_dataloader = DataLoader(train_dataset, batch_size = BATCH_SIZE, collate_fn
 #                                         embedding_index_for_unknown_words = num_embeddings - 1, device = device)
 
 
-qa_module = QAModuleWithAttentionSmallerPassageRep(embedding, device = device)
+qa_module = QAModuleWithAttentionLarge(embedding, device = device)
 
 if use_serialized_model:
     qa_module.load_state_dict(torch.load(serialized_model_file_path))
@@ -295,6 +298,7 @@ iteration_count_for_error_plot = num_test_iterations/10
 
 # reset the iteration count
 iteration_count = 0
+predictions_for_eval: Dict = {}
 
 with torch.no_grad():
     for batch in test_dataloader:
@@ -337,6 +341,11 @@ with torch.no_grad():
 
         answer_start_indices_chosen_by_model = torch.squeeze(torch.topk(start_index_outputs, 1, dim = 1)[1])
         answer_end_indices_chosen_by_model = torch.squeeze(torch.topk(end_index_outputs, 1, dim = 1)[1])
+        # pdb.set_trace()
+
+        # predictions_for_eval.update({instance.id: instance.passage[answer_start_indices_chosen_by_model[i]:answer_end_indices_chosen_by_model[i] + 1]
+        #                              for instance in batch for i in range(len(batch))})
+
 
         # torch.squeeze is used to make sure original indices matrices are squeezed to dimension (N)
         # as opposed to (N, 1) as answer_indices_chosen_by_model are vectors of size (N) due to which
@@ -387,6 +396,9 @@ print("start index accuracy: " + str(num_correct_start_index_answers / total_ans
 print("end index accuracy: " + str(num_correct_end_index_answers / total_answers))
 print("exact match accuracy: " + str(num_answers_with_both_indices_correct/total_answers))
 print("total answers: " + str(total_answers))
+
+# dev_dataset_as_json = SquadReader.extract_dataset(dev_data_file_path)
+
 
 # test_loss_values_ordered = test_iteration_to_loss_dict.values()
 # plt.plot(test_iteration_to_loss_dict.keys(), test_loss_values_ordered)
