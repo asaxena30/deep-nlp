@@ -2,11 +2,12 @@ import torch
 import torch.nn
 from torch.nn.init import xavier_normal_, kaiming_normal_
 from torch.nn.modules.module import Module
+import pdb
 
 from src.common.neural_net_param_utils import init_lstm_forget_gate_biases
 from src.modules.attention.attention_modules import \
     SymmetricBidirectionalAttention, BidirectionalAttention, GuidedSelfAttention, SymmetricSelfAttention, \
-    BidafAttention, AsymmetricSelfAttention
+    BidafAttention, AsymmetricSelfAttention, BidirectionalAttentionSimplified
 
 
 class QAModule(Module):
@@ -140,9 +141,10 @@ class QAModuleWithGuidedSelfAttention(QAModule):
         return final_outputs_for_start_index, final_outputs_for_end_index
 
 
+
 class QAModuleWithAttentionLarge(QAModule):
     """
-        Typical as of now seems to be ~37%+ with 2 epochs, batch-size = 32, grad-accum = 16 steps, Adam with lr = 1e-3 with step-decay
+        Typical EM accuracy as of #16 - 17 below seems to be 44%+ with 2 epochs, batch-size = 32, grad-accum = 16 steps, Adam with lr = 1e-3 with step-decay
         of 0.1 per epoch. training for 2 epochs
 
         Observations (2 epoch training):
@@ -160,17 +162,78 @@ class QAModuleWithAttentionLarge(QAModule):
          6. 09/26/2019: trying learnable initial hidden/cell states for final passage rep lstm. no gain in accuracy found for 2 epoch training, test accuracy still lurking
             around ~37%
          7. Added hierarchical attention (passage-self-attention-output X question-embedding concatenated with question-bi-attn-output X passage embedding).
-            Accuracy went down by 5% to ~ 32% for 2 epoch training.
-         8. Feeding the start index outputs while calculating the end index outputs made the accuracy go up to 40.98%
-         8. Using learned hidden states for the embedding lstm actually decreased accuracy back to ~37% in spite of retaining #8's changes
+            Accuracy went down by 5% to ~ 32% for 2 epoch training. Squeezing in another batch-norm makes accuracy go up tp 35% in spite of this new attention
+
+            Getting rid of #7's change from here onwards
+
+         8. Feeding the start index outputs while calculating the end index outputs made the EM accuracy go up to 40.98%
+         9. Using learned hidden states for the embedding lstm actually decreased accuracy back to ~37% in spite of retaining #8's changes
+         10. Using two linear layers at the end with the 1st linear layer squeezing the outputs to embedding_size * 3 (which is when input to the final linear layer) + relu
+            after the first linear layer + #8 gave the same accuracy as #8 ~ 40.99%
+         11. Adding another bi-attention layer on top of #10 squeezes the accuracy down to 39.37%. this bi-attn layer computes
+         another bi-attention on top of 1st bi-attn outputs
+         12. Providing a bigger intermediate layer or a bigger 2nd linear output layer decreases performance to around 37%
+         13. Going back to #10 (throwing away the bigger intermediate layer in #12 and the 3rd bi-attn layer in #11) but using glove.800b.300d (while only keeping the words/tokens required for squad train/dev datasets) as opposed to the
+             available FastText (which isn't the same as FastText 800B) increases the accuracy to 43.91% => embedding quality matters.
+             Most likely glove 6B etc. won't be able to reproduce the same results. FastText's authors, in their paper claimed their embedding to be superior to glove's.
+             There's a chance that upon using FastText 800B etc., we'd see similar/better improvements
+             On a side note, limiting the embedding matrix to only the tokens required for squad, drastically reduces the memory footprint (65 - 70%) -> ~40%
+             of V100 memory
+         14. Trying two separate LSTMs for the start and end index respectively. this has been tried before with no advantage but the difference this time is, the
+             end-index lstm is fed the start-index final output. Accuracy was similar to #13 => 43.82%. The difference seen was, now the start and end index individual accuracies
+             are closer to each other 56.x vs 57.y % compared to #13 (~54% and ~58% respectively). Memory usage on V100 went up from ~ 40% to 48.8% compared
+             to #13 due to the addition of the new lstm
+         15. Same as #14 but using a detach() on the start-index input makes the accuracy go down to 43.42%. The effect detach has here is that the end-index sub-graph training won't
+             lead to a change in params for the entire start-index subgraph thus in a way favoring that start-index affect the end-index but the training dedicated to the latter doesn't
+             affect the former. Looks like at least for the first 2 epochs, removing this co-adaptation decreases accuracy even if by 0.4 %
+         16. Same as #14 (no longer using detach() as noted in 315 above) but initializing unknown word embeddings to torch.randn(300)/100. the accuracy increases to 44.3%.
+             When using torch.randn(300)/10 instead, the accuracy goes down to around 43.3% (which is lower than simply initializing
+             each unknown word to it's individual 0-tensor)
+         17. Adding two embedding lstms with a skip connection between them (2nd lstm input = 1st lstm output + original passage/question batch), accuracy is mostly
+             the same as #16 (44.2% as opposed to 44.3% in #16)
+         18. Using a leaky-ReLU for the first bidirectional-attention (as opposed to Tanh) led to an accuracy of 43.43. It's comparable to using a Tanh since for one of the runs
+             tanh yielded ~43% accuracy
+         19. Using bidaf-attention for a 2 epoch training decreased the accuracy to ~40%
+         20. Removed bidaf attention and leaky-relu (back to tanh). In the bidrectional attention, it was found that the attention weights for LHS (question) were turning out to be very
+             similar for each passage word i.e. the attention paid by each question word to each passage was very homogeneous across passage words. Taking away the
+             denominator of sq-root of embedding-size from final_attention_weights_softmaxed_for_lhs made accuracy increase to 44.9%
+         21. Using simplified bi-attention (where the lhs and rhs are only multiplied by vectors initialized to 1s as opposed to being passed through linear layers),
+             the accuracy observed was 44.3%. For this run, I retained the change where only the rhs aka question-weights for each context word were being divided by
+             sq-root of input-size
+         22. Using unnormalized weights (i.e. non-softmaxed) even for simplified biattention reduces the accuracy to 40.35%. "even" because the same effect
+             was observed for the case of standard bi-attention
+         23. Same as #20 (which led to 44.9% accuracy) but using RAdam with lr = 1e-2 (as opposed to be 1e-3 for most other runs that used Adam, including #20). Interestingly,
+             using 1e-3 with RAdam led to very high errors (0.3+) even until iteration #4000+ (stopped this run before it completed after seeing this).
+             Also, the avg. loss was close (in fact lower at the 4th place of decimal) to #20. 0.2363 for #20 vs 0.2360 for RAdam. Looks like RAdam
+             will allow a higher learning rate as reported in online literature/discussion-threads. This might prove useful for > 2 epoch training.
+             Verified again that using 1e-2 with Adam is disastrous as expected from very early runs (loss = 0.48 around iteration# 3900).
+             This was worse than using 1e-3 with RAdam
+         24. On a slightly different note, tried AdamW as well. first with weight-decay = 1e-2 (this run was using the simplified bi-attention) => accuracy was
+             around 40%. However, when beefing up the regularization to 5e-2 (and switching to #20 architecture i.e. going back to standard bi-attention),
+             the dev accuracy went down to 27% => let's avoid using too high of a weight decay right now at least for the 2 epoch training
+         25. Found a huge jump in accuracy when employing a slightly larger hidden state on the embedding lstm (350 as opposed to 300). Drastic increase in EM accuracy:
+             56.68%. Co-incidentally the EM number was identical to start-index accuracy => all correct start indices also had correct end-indices.
+
 
             TODO: make batch-size a constructor param?
+
+            1. Layer-wise learning rates: https://stackoverflow.com/questions/51801648/how-to-apply-layer-wise-learning-rate-in-pytorch
+            2. evaluate saved models: https://discuss.pytorch.org/t/saving-and-loading-a-model-in-pytorch/2610/32
+
+        Conneau et al (https://arxiv.org/pdf/1705.02364.pdf) had an interesting observation that while sentence representation models trained using attention
+        can fit faster, LSTM models could generalize better to other tasks.
+
+        In their case a BI-LSTM with max-pooling between the last forward and backward hidden states yielded the best sentence rep.
+        The caveat is, these models have been trained on SNLI and possibly for a lot of epochs. This paper doesn't mention the
+        exact number of epochs, simply that they conditionally decrease the lr whenever the dev accuracy after an epoch goes down and stop training once the lr
+        goes below 1e-5
 
     """
 
     def __init__(self, embedding: torch.nn.Embedding, device):
         super().__init__(embedding = embedding, device = device)
-        self.lstm_for_embedding = torch.nn.LSTM(self.embedding.embedding_dim, self.embedding.embedding_dim,
+        self.embedding_lstm_hidden_size = int(self.embedding.embedding_dim + self.embedding.embedding_dim / 3)
+        self.lstm_for_embedding = torch.nn.LSTM(self.embedding.embedding_dim, self.embedding_lstm_hidden_size,
                                                 bidirectional = True, batch_first = True, bias = False)
 
         # using learned initial states for the embedding lstm
@@ -179,12 +242,13 @@ class QAModuleWithAttentionLarge(QAModule):
 
         self.final_embedding_size = int(self.embedding.embedding_dim)
 
-        self.linear_layer_for_final_embedding = torch.nn.Linear(self.embedding.embedding_dim * 3, self.final_embedding_size)
+        self.linear_layer_for_final_embedding = torch.nn.Linear(self.embedding.embedding_dim + self.embedding_lstm_hidden_size * 2, self.final_embedding_size)
         xavier_normal_(self.linear_layer_for_final_embedding.weight)
 
         self.norm_layer_for_embedding_output = torch.nn.BatchNorm1d(self.final_embedding_size)
 
-        self.bidirectional_attention_module = BidirectionalAttention(self.final_embedding_size, activation = torch.nn.Tanh, scale_dot_products = True)
+        self.bidirectional_attention_module = BidirectionalAttention(self.final_embedding_size, activation = torch.nn.Tanh, scale_dot_products = True,
+                                                                     return_with_inputs_concatenated = True)
 
         self.question_to_question_attention = SymmetricSelfAttention(self.final_embedding_size, return_with_inputs_concatenated = True,
                                                                      scale_dot_products = True, activation = torch.nn.ReLU,
@@ -194,32 +258,40 @@ class QAModuleWithAttentionLarge(QAModule):
                                                                    linear_layer_weight_init = kaiming_normal_)
 
         self.bidirectional_attention_module_2 = BidirectionalAttention(self.final_embedding_size * 2,
-                                                                       return_with_inputs_concatenated = False,
-                                                                       activation = torch.nn.Tanh,
+                                                                       return_with_inputs_concatenated = False, activation = torch.nn.Tanh,
                                                                        scale_dot_products = True)
+
+        # self.bidirectional_attention_module_2 = BidafAttention(self.final_embedding_size * 2,
+        #                                                                return_with_inputs_concatenated = False, activation = torch.nn.Tanh)
 
         self.linear_layer_before_final_passage_rep = torch.nn.Linear(self.final_embedding_size * 4, self.final_embedding_size * 2)
         self.norm_layer_before_final_passage_rep = torch.nn.BatchNorm1d(self.final_embedding_size * 2)
 
         xavier_normal_(self.linear_layer_before_final_passage_rep.weight)
 
-        self.lstm_for_final_passage_representation = torch.nn.LSTM(self.final_embedding_size * 2, self.final_embedding_size * 2,
-                                                                   bidirectional = True, batch_first = True, bias = True)
+        self.lstm_for_final_passage_representation_start_index = torch.nn.LSTM(self.final_embedding_size * 2, self.final_embedding_size * 2,
+                                                                               bidirectional = True, batch_first = True, bias = True)
 
-        init_lstm_forget_gate_biases(self.lstm_for_final_passage_representation, value = 1.0)
+        self.lstm_for_final_passage_representation_end_index = torch.nn.LSTM(self.final_embedding_size * 2 + 1, self.final_embedding_size * 2,
+                                                                               bidirectional = True, batch_first = True, bias = True)
 
-        self.lstm_for_final_passage_rep_init_hidden_state, self.lstm_for_final_passage_rep_init_cell_state = self._init_lstm_hidden_and_cell_state(1,
-                                                                               self.final_embedding_size * 2, is_bidirectional = True, as_trainable_params = True)
+        init_lstm_forget_gate_biases(self.lstm_for_final_passage_representation_start_index, value = 1.0)
+        init_lstm_forget_gate_biases(self.lstm_for_final_passage_representation_end_index, value = 1.0)
+
+        self.lstm_for_final_passage_rep_init_hidden_state, self.lstm_for_final_passage_rep_init_cell_state = \
+            self._init_lstm_hidden_and_cell_state(1, self.final_embedding_size * 2, is_bidirectional = True, as_trainable_params = True)
 
         self.start_index_batch_norm_layer = torch.nn.BatchNorm1d(self.final_embedding_size * 5)
         self.end_index_batch_norm_layer = torch.nn.BatchNorm1d(self.final_embedding_size * 5)
 
         self.linear_layer_for_start_index = torch.nn.Linear(self.final_embedding_size * 5, 1)
-        self.linear_layer_for_end_index = torch.nn.Linear(self.final_embedding_size * 5 + 1, 1)
+        self.linear_layer_for_end_index = torch.nn.Linear(self.final_embedding_size * 5, 1)
 
     def forward(self, question_batch_index_tensor: torch.Tensor, passage_batch_index_tensor: torch.Tensor):
         question_batch = self.embedding(question_batch_index_tensor)
         passage_batch = self.embedding(passage_batch_index_tensor)
+
+        # pdb.set_trace()
 
         # using learned initial states for the embedding lstm
         # embedding_init_states = (self.lstm_for_embedding_init_hidden_state.repeat(1, question_batch.size()[0], 1),
@@ -231,10 +303,10 @@ class QAModuleWithAttentionLarge(QAModule):
         # passage_lstm_output = self.lstm_for_embedding(passage_batch, embedding_init_states)[0]
 
         question_lstm_output = self.lstm_for_embedding(question_batch, self._init_lstm_hidden_and_cell_state(
-            question_batch.size()[0], self.embedding.embedding_dim))[0]
+            question_batch.size()[0], self.embedding_lstm_hidden_size))[0]
 
         passage_lstm_output = self.lstm_for_embedding(passage_batch, self._init_lstm_hidden_and_cell_state(
-            passage_batch.size()[0], self.embedding.embedding_dim))[0]
+            passage_batch.size()[0], self.embedding_lstm_hidden_size))[0]
 
         passage_embedding_input = torch.cat([passage_batch, passage_lstm_output], dim = 2)
         question_embedding_input = torch.cat([question_batch, question_lstm_output], dim = 2)
@@ -245,7 +317,7 @@ class QAModuleWithAttentionLarge(QAModule):
         question_embedding = torch.transpose(self.norm_layer_for_embedding_output(torch.transpose(
             self.linear_layer_for_final_embedding(question_embedding_input), dim0 = 1, dim1 = 2)), dim0 = 1, dim1 = 2)
 
-        # (N, seq_length, 2 * embedding_size)
+        # (N, seq_length,  2 * embedding_size)
         question_bidirectional_attention_output, passage_bidirectional_attention_output = \
             self.bidirectional_attention_module(question_embedding, passage_embedding)
 
@@ -260,26 +332,33 @@ class QAModuleWithAttentionLarge(QAModule):
 
         # (N, SEQUENCE_LENGTH, 2 * input_size)
         final_concatenated_passage_output = torch.transpose(self.linear_layer_before_final_passage_rep(torch.cat([passage_bidirectional_attention_output,
-                                                                   passage_bidirectional_attention_output_2], dim = 2)), dim0 = 1, dim1 = 2)
+                                                                   passage_bidirectional_attention_output_2], dim = 2)),
+                                                            dim0 = 1, dim1 = 2)
 
         final_concatenated_passage_output = torch.transpose(self.norm_layer_before_final_passage_rep(final_concatenated_passage_output), dim0 = 1, dim1 = 2)
 
-        final_enriched_passage_output = torch.cat(
-            [passage_embedding, self.lstm_for_final_passage_representation(final_concatenated_passage_output,
-                                                                           (self.lstm_for_final_passage_rep_init_hidden_state.repeat(
-                                                                               1, final_concatenated_passage_output.size()[0], 1),
-                                                                            self.lstm_for_final_passage_rep_init_cell_state.repeat(
-                                                                                1, final_concatenated_passage_output.size()[0], 1)))[0]], dim = 2)
+        init_hidden_state_repeated = self.lstm_for_final_passage_rep_init_hidden_state.repeat(1, final_concatenated_passage_output.size()[0], 1)
+        init_cell_state_repeated = self.lstm_for_final_passage_rep_init_cell_state.repeat(1, final_concatenated_passage_output.size()[0], 1)
 
-        # transpose for input to batch-norm layers
-        final_enriched_passage_output = torch.transpose(final_enriched_passage_output, dim0 = 1, dim1 = 2)
+        # start index
+        final_enriched_passage_output_start_index = torch.cat(
+            [passage_embedding, self.lstm_for_final_passage_representation_start_index(final_concatenated_passage_output, (init_hidden_state_repeated,
+                                                                                                                           init_cell_state_repeated))[0]], dim = 2)
 
-        batch_normed_start_index_output = self.start_index_batch_norm_layer(final_enriched_passage_output)
-        batch_normed_end_index_output = self.end_index_batch_norm_layer(final_enriched_passage_output)
-
+        final_enriched_passage_output_start_index = torch.transpose(final_enriched_passage_output_start_index, dim0 = 1, dim1 = 2)
+        batch_normed_start_index_output = self.start_index_batch_norm_layer(final_enriched_passage_output_start_index)
         final_outputs_for_start_index = self.linear_layer_for_start_index(torch.transpose(batch_normed_start_index_output, dim0 = 1, dim1 = 2))
-        final_outputs_for_end_index = self.linear_layer_for_end_index(torch.cat([torch.transpose(batch_normed_end_index_output, dim0 = 1, dim1 = 2),
-                                                                                 final_outputs_for_start_index], dim = 2))
+
+
+        # end index
+        final_enriched_passage_output_end_index = torch.cat(
+            [passage_embedding, self.lstm_for_final_passage_representation_end_index(torch.cat([final_concatenated_passage_output,
+                                                                                                final_outputs_for_start_index], dim = 2),
+                                                                                     (init_hidden_state_repeated, init_cell_state_repeated))[0]], dim = 2)
+
+        final_enriched_passage_output_end_index = torch.transpose(final_enriched_passage_output_end_index, dim0 = 1, dim1 = 2)
+        batch_normed_end_index_output = self.end_index_batch_norm_layer(final_enriched_passage_output_end_index)
+        final_outputs_for_end_index = self.linear_layer_for_end_index(torch.transpose(batch_normed_end_index_output, dim0 = 1, dim1 = 2))
 
         return final_outputs_for_start_index, final_outputs_for_end_index
 

@@ -17,3 +17,8 @@ serialize_squad_dataset_as_json.py
 squad_qa_with_enhanced_input.py
 src/main/runs
 question_answering_modules_which_didnt_work_well.py
+glove_vectors
+glove_vectors_trimmed
+src/optim
+build_limited_embedding_set.py
+build_and_save_pos_tagger.py

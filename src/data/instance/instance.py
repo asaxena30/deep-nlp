@@ -20,8 +20,8 @@ class QAInstanceWithAnswerSpan:
 class TaggedQAInstanceWithAnswerSpan(QAInstanceWithAnswerSpan):
     def __init__(self, question: List[str], question_pos_tags: List[str], passage: List[str],
                  passage_pos_tags: List[str], answer: str, answer_start_and_end_index: Tuple[int, int],
-                 total_length: int):
-        super().__init__(question, passage, answer, answer_start_and_end_index, total_length)
+                 total_length: int,  id: str = None):
+        super().__init__(question, passage, answer, answer_start_and_end_index, total_length, id)
         self.question_pos_tags = question_pos_tags
         self.passage_pos_tags = passage_pos_tags
 
