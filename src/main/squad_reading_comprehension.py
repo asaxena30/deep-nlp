@@ -311,8 +311,10 @@ with torch.no_grad():
         # torch.squeeze is used to make sure original indices matrices are squeezed to dimension (N)
         # as opposed to (N, 1) as answer_indices_chosen_by_model are vectors of size (N) due to which
         # a comparison with a matrix of size (N, 1) confuses torch.topk making it return incorrect results
+
         answer_start_index_comparison_tensor = torch.eq(torch.squeeze(answer_start_indices_original),
                                                         answer_start_indices_chosen_by_model)
+
         answer_end_index_comparison_tensor = torch.eq(torch.squeeze(answer_end_indices_original),
                                                       answer_end_indices_chosen_by_model)
 
@@ -322,16 +324,10 @@ with torch.no_grad():
 
         # print(answer_end_index_comparison_tensor)
 
-        # let's replace the 0s in one of the comparison tensors by -1, this makes sure when we calculate
-        # which examples we got both indices correct for, we don't consider the ones that have 0 in both
-        # the comparison tensors
-        answer_end_index_comparison_tensor[answer_end_index_comparison_tensor == 0] = 2
-
         # print(answer_end_index_comparison_tensor)
 
         # now this should only count the values for which both answers are correct
-        num_answers_with_both_indices_correct += torch.eq(answer_start_index_comparison_tensor,
-                                                          answer_end_index_comparison_tensor).sum().item()
+        num_answers_with_both_indices_correct += (answer_start_index_comparison_tensor & answer_end_index_comparison_tensor).sum().item()
 
         if iteration_count % iteration_count_for_error_plot == 0:
             test_iteration_to_loss_dict[iteration_count] = total_loss.data.item()

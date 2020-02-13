@@ -211,8 +211,9 @@ class QAModuleWithAttentionLarge(QAModule):
          24. On a slightly different note, tried AdamW as well. first with weight-decay = 1e-2 (this run was using the simplified bi-attention) => accuracy was
              around 40%. However, when beefing up the regularization to 5e-2 (and switching to #20 architecture i.e. going back to standard bi-attention),
              the dev accuracy went down to 27% => let's avoid using too high of a weight decay right now at least for the 2 epoch training
-         25. Found a huge jump in accuracy when employing a slightly larger hidden state on the embedding lstm (350 as opposed to 300). Drastic increase in EM accuracy:
-             56.68%. Co-incidentally the EM number was identical to start-index accuracy => all correct start indices also had correct end-indices.
+         25. Using a larger hidden state on the embedding lstm (350 as opposed to 300) increases EM accuracy to 44.94%. This also involved a bug-fix
+             which was caused by pytorch’s new BoolTensor behavior which was making the accuracy seem like 56.68% which was identical to the start-index accuracy.
+             Using a hidden state of 400 decreases the accuracy to 43.7%
 
 
             TODO: make batch-size a constructor param?
