@@ -47,7 +47,7 @@ class SquadReader:
     answer_end_marker_with_spaces: str = " %s " % answer_end_marker
 
     @staticmethod
-    def read(file_path: str, include_unanswerable_questions = False):
+    def read(file_path: str, include_unanswerable_questions: bool = False, use_longest_answers: bool = False):
         with open(file_path) as dataset_file:
             dataset = SquadReader.extract_dataset(dataset_file)
 
@@ -58,8 +58,10 @@ class SquadReader:
                     for question_answer in paragraph_json['qas']:
                         if include_unanswerable_questions:
                             raise UnsupportedOperationError("no support for unanswerable questions yet")
-                        question_text = SquadReader.correct_known_typos(question_answer["question"].strip().replace("\n", ""))
-                        all_answers = sorted(question_answer['answers'], key = lambda ans: len(ans['text']))
+                        question_text = SquadReader.correct_known_typos(
+                            question_answer["question"].strip().replace("\n", ""))
+                        all_answers = sorted(question_answer['answers'],
+                                             key=lambda ans: (-1 if use_longest_answers else 1) * len(ans['text']))
                         answer_texts = [answer['text'] for answer in all_answers]
 
                         # effectively, no answers means it's an unanswerable question which isn't supported yet
@@ -68,6 +70,7 @@ class SquadReader:
 
                         span_starts = [answer['answer_start'] for answer in all_answers]
                         span_ends = [start + len(answer) for start, answer in zip(span_starts, answer_texts)]
+
                         yield {"id": question_answer["id"],
                                "passage": paragraph,
                                "question": question_text,
@@ -85,8 +88,9 @@ class SquadReader:
         return question_or_passage_text.replace("assimilted", "assimilated")
 
     @staticmethod
-    def get_squad_dataset_from_file(file_path: str, add_pos_tags: bool = False) -> SquadDataset:
-        instances = SquadReader.read(file_path)
+    def get_squad_dataset_from_file(file_path: str, add_pos_tags: bool = False,
+                                    use_longest_answers: bool = False) -> SquadDataset:
+        instances = SquadReader.read(file_path, use_longest_answers=use_longest_answers)
         squad_instance_list: List = []
 
         for squad_qa_instance_as_dict in instances:
@@ -101,7 +105,8 @@ class SquadReader:
 
             # here we are simply inserting answer start and end markers so that after tokenization we can still track
             # the answer boundaries
-            passage_text_for_tokenization = passage_text[:span_start_char_index] + SquadReader.answer_start_marker_with_spaces + \
+            passage_text_for_tokenization = passage_text[
+                                            :span_start_char_index] + SquadReader.answer_start_marker_with_spaces + \
                                             passage_text[
                                             span_start_char_index: span_end_char_index] + SquadReader.answer_end_marker_with_spaces + \
                                             passage_text[span_end_char_index:]
@@ -126,21 +131,21 @@ class SquadReader:
             answer_indices = (answer_span_start_token_index, answer_span_end_token_index)
 
             if add_pos_tags:
-                instance = TaggedQAInstanceWithAnswerSpan(question = question_tokens,
-                                                    question_pos_tags = pos_tag(question_tokens),
-                                                    passage = passage_tokens,
-                                                    passage_pos_tags = pos_tag(passage_tokens),
-                                                    answer = squad_qa_instance_as_dict['answer'],
-                                                    answer_start_and_end_index = answer_indices,
-                                                    total_length = len(question_tokens + passage_tokens),
-                                                    id = qa_id)
+                instance = TaggedQAInstanceWithAnswerSpan(question=question_tokens,
+                                                          question_pos_tags=pos_tag(question_tokens),
+                                                          passage=passage_tokens,
+                                                          passage_pos_tags=pos_tag(passage_tokens),
+                                                          answer=squad_qa_instance_as_dict['answer'],
+                                                          answer_start_and_end_index=answer_indices,
+                                                          total_length=len(question_tokens + passage_tokens),
+                                                          id=qa_id)
             else:
-                instance = QAInstanceWithAnswerSpan(question = question_tokens,
-                                                    passage = passage_tokens,
-                                                    answer = squad_qa_instance_as_dict['answer'],
-                                                    answer_start_and_end_index = answer_indices,
-                                                    total_length = len(question_tokens + passage_tokens),
-                                                    id = qa_id)
+                instance = QAInstanceWithAnswerSpan(question=question_tokens,
+                                                    passage=passage_tokens,
+                                                    answer=squad_qa_instance_as_dict['answer'],
+                                                    answer_start_and_end_index=answer_indices,
+                                                    total_length=len(question_tokens + passage_tokens),
+                                                    id=qa_id)
 
             squad_instance_list.append(instance)
 
@@ -148,4 +153,4 @@ class SquadReader:
             # print(question_tokens)
             # print(squad_qa_instance_as_dict['answer'])
 
-        return SquadDataset(sorted(squad_instance_list, key = lambda x: x.total_length))
+        return SquadDataset(sorted(squad_instance_list, key=lambda x: x.total_length))

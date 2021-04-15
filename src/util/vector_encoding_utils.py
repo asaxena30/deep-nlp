@@ -1,7 +1,8 @@
-import torch
-from src.util import datasetutils, sequence_utils
 from typing import Dict, List, Tuple
-from src.common import CustomTypes
+
+import torch
+
+from src.util import datasetutils, sequence_utils
 
 
 def load_fasttext():
@@ -23,19 +24,19 @@ def build_one_hot_encoded_tensors_for_tags(tags: List[str]) -> Dict[str, torch.T
     return tags_to_tensor_rep_dict
 
 
-def get_fasttext_word_vector(word: str, fasttext) -> CustomTypes.TorchTensor:
+def get_fasttext_word_vector(word: str, fasttext) -> torch.Tensor:
     try:
         return fasttext[word]
     except KeyError:
         return torch.zeros(300)
 
 
-def get_word_embeddings_for_sentence(sentence: List, fasttext, has_tags: bool=False) -> List[CustomTypes.TorchTensor]:
+def get_word_embeddings_for_sentence(sentence: List, fasttext, has_tags: bool=False) -> List[torch.Tensor]:
     return [get_fasttext_word_vector(word_with_tag[0].lower(), fasttext) for word_with_tag in sentence] if has_tags \
         else [get_fasttext_word_vector(word.lower(), fasttext) for word in sentence]
 
 
-def get_word_embeddings_for_test_sentence(sentence: List) -> List[CustomTypes.TorchTensor]:
+def get_word_embeddings_for_test_sentence(sentence: List) -> List[torch.Tensor]:
     fasttext = load_fasttext()
     return [get_fasttext_word_vector(word.lower(), fasttext) for word in sentence]
 
@@ -74,6 +75,7 @@ def build_index_tensor_for_tokenized_sentences(tokenized_sentence_list: List[Lis
                                                index_for_unknown_tokens: int):
     sentence_tensor_list: List[torch.Tensor] = []
     for tokenized_sentence in tokenized_sentence_list:
+
         sentence_tensor = torch.tensor([token_to_index_dict[token] if token in token_to_index_dict else index_for_unknown_tokens
                                         for token in tokenized_sentence], dtype = torch.long)
         sentence_tensor_list.append(sentence_tensor)

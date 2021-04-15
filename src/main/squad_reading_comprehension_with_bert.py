@@ -9,10 +9,10 @@ from torch.utils.data.dataloader import DataLoader, default_collate
 
 from src.common.neural_net_param_utils import normal_weight_init, print_gradients
 from src.data.instance.instance import SquadTensorInstanceForBert
+from src.modules.question_answering_modules_bert import BertQuestionAnsweringModuleSimplified
 from src.tokenization.tokenizers import PretrainedBertTokenizer
 from src.data.dataset.datasetreaders import SquadReader
 from src.data.dataset.dataset import SquadDatasetForBert
-from src.modules.question_answering_modules import BertQuestionAnsweringModule, BertQuestionAnsweringModuleSimplified
 from torch.nn.functional import pad
 from torch.utils.checkpoint import checkpoint
 from pytorch_pretrained_bert.optimization import BertAdam
