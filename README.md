@@ -8,7 +8,7 @@ Prerequisites:
 
 As of now contains 3 complete implementations(refer to src/main):
 
-1. squad_reading_comprehension.py: A model I architected which employs a combination of biLSTMs, Bidirectional-Attention and self-Attention for squad 1.1 (https://rajpurkar.github.io/SQuAD-explorer/). It's a WIP, will post updates here as it's completed.
+1. squad_reading_comprehension.py: A model I architected which employs a combination of biLSTMs, Bidirectional-Attention and self-Attention for squad 1.1 (https://rajpurkar.github.io/SQuAD-explorer/). It's a WIP, will post updates here as it's completed. So far, modeules/question_answering_modules.py has some models which will reach 39% - 44%+ Exact Match Accuracy on Squad 1.1 in 2 epochs. The latter kind, as I discovered throguh higher epoch training, don't scale with epochs in spite of high initial accuracy. 
 2. squad_reading_comprehension_with_bert.py: Reading comprehension using a pretrained BERT model on a subset of SQUAD  dataset (Basically SQuAD 2.0 with any questions without answer-text removed, details and running instructions TBA). Needs Squad V1.1 (or 2.0 but unanswered questions are not supported yet and will be skipped) and pytorch-pretrained-bert (https://github.com/huggingface/pytorch-pretrained-BERT). Also skips instances where the combined (question + answer) length is more than the maximum token length supported by BERT (512). Note that this uses pytorch's gradient accumulation feature right now to prevent out-of-memory errors on entry-level GPUs. Also has an option to enable checkpointing (https://pytorch.org/docs/stable/checkpoint.html) but I had some trouble with it so have left it disabled by default and have chosen to rely solely on gradient accumulation instead. I was able to get start-index accuracy of 68.5% and end-index accuracy of 71.5% with this implementation after training for 2 epochs with a small batch-size + gradient accumulation. I haven't tried replicating exactly what Google did with their implementation except for using BertAdam with learning-rate warmup and taking cues from the Pytorch port.
 
 I've included a custom SQuAD reader in datasetreaders.py which can be modified to support SQuAD 2.0 as well.
@@ -27,3 +27,4 @@ Still a WIP. Some of the classes included are supporting infrastructure for more
 
 **Special thanks to huggingface for porting BERT to Pytorch. Please refer to https://github.com/huggingface/pytorch-pretrained-BERT to access this awesome implementation.**  
 
+Planning to write a medium blog-post of some observations I gathered around batch-norm, Adam variants, learning rate heuristics etc. Will post the link here when done.
