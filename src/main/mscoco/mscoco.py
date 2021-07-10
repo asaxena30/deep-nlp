@@ -113,10 +113,6 @@ basic_encoder_decoder = BasicEncoderDecoderModel(encoder_output_size=128, decode
                                                  summary_writer=summary_writer,
                                                  resnet_model_type=ResNetModelType.RESNET34).to(device)
 
-
-# encoder_model = ResNetWithLastLayerModified(128, resnet_model_type=ResNetModelType.RESNET34).to(device)
-# decoder_model = BasicLSTMBasedDecoderModel(128, 256, vocabulary_size, 1, init_lstm_biases_to_one=True).to(device)
-
 attention_based_encoder_decoder = BasicEncoderDecoderModelWithAttention(resnet_model_type=ResNetModelType.RESNET18,
                                                                         vocabulary_size=vocabulary_size).to(device)
 
@@ -147,7 +143,6 @@ for epoch in tqdm(range(num_epochs)):
         loss = loss_criterion(outputs, targets)
 
         basic_encoder_decoder.zero_grad()
-
         loss.backward()
         optimizer.step()
 
