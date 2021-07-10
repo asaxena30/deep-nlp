@@ -12,16 +12,18 @@ from tqdm import tqdm
 
 from src.common.neural_net_param_utils import add_parameter_stats_to_summary_writer
 from src.data.dataset.datasetreaders import SquadReader
-from src.main.squad_qa_helper import collate_with_padding, load_serialized_dataset, \
+from src.main.squad.squad_qa_helper import collate_with_padding, load_serialized_dataset, \
     get_qa_model_outputs, get_total_loss_and_original_indices
 from src.modules.question_answering_modules import QAModuleOutputs, \
-    QAModuleMod5StaticBatchNormsNoBNBeforeFinalLinearLayers, \
     QAModuleMod5StaticBatchNormsNoBNBeforeFinalLinearLayersWDropout
 from src.util import vector_encoding_utils
 from src.util.vector_encoding_utils import build_index_tensor_for_tokenized_sentences
 
-dataset_data_file_path: str = "../../data/SQuAD"
-serialized_dataset_file_path: str = "../../data/squad_serialized"
+import os
+print(os.getcwd())
+
+dataset_data_file_path: str = "data/SQuAD"  #../../../data/SQuAD"
+serialized_dataset_file_path: str = "../../../data/squad_serialized"
 FASTTEXT = "fasttext"
 GLOVE = "glove"
 
@@ -43,7 +45,7 @@ dev_data_file_path: str = dataset_data_file_path + "/sample.json"
 serialized_training_data_file_path: str = serialized_dataset_file_path + "/squad_dataset_train"
 serialized_dev_data_file_path: str = serialized_dataset_file_path + "/squad_dataset_dev"
 
-serialized_model_file_path = "../../saved_models/qa_module_epoch_3_and_4_cyclic_lr_mod4"
+serialized_model_file_path = "../../../saved_models/qa_module_epoch_3_and_4_cyclic_lr_mod4"
 
 # the number of epochs to train the model for
 NUM_EPOCHS: int = 1

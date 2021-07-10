@@ -18,7 +18,7 @@ from torch.utils.checkpoint import checkpoint
 from pytorch_pretrained_bert.optimization import BertAdam
 
 
-dataset_data_file_path: str = "../../data/SQuAD"
+dataset_data_file_path: str = "../../../data/SQuAD"
 
 # training_data_file_path: str = dataset_data_file_path + "/train-v2.0.json"
 # dev_data_file_path: str = dataset_data_file_path + "/dev-v2.0.json"

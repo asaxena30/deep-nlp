@@ -250,7 +250,7 @@ class BidirectionalAttention(Module):
 
     def __init__(self, input_size: int, return_with_inputs_concatenated: bool = True, activation=torch.nn.Tanh,
                  linear_layer_weight_init=None,
-                 scale_attention_weights_for_rhs: bool = True, scale_attention_weights_for_lhs=True,
+                 scale_attention_weights_for_rhs: bool = True, scale_attention_weights_for_lhs: bool = True,
                  use_batch_norm: bool = False):
         super().__init__()
         self.input_size = input_size
