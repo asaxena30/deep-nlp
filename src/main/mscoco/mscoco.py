@@ -114,8 +114,8 @@ basic_encoder_decoder = BasicEncoderDecoderModel(encoder_output_size=128, decode
                                                  resnet_model_type=ResNetModelType.RESNET34).to(device)
 
 
-encoder_model = ResNetWithLastLayerModified(128, resnet_model_type=ResNetModelType.RESNET34).to(device)
-decoder_model = BasicLSTMBasedDecoderModel(128, 256, vocabulary_size, 1, init_lstm_biases_to_one=True).to(device)
+# encoder_model = ResNetWithLastLayerModified(128, resnet_model_type=ResNetModelType.RESNET34).to(device)
+# decoder_model = BasicLSTMBasedDecoderModel(128, 256, vocabulary_size, 1, init_lstm_biases_to_one=True).to(device)
 
 attention_based_encoder_decoder = BasicEncoderDecoderModelWithAttention(resnet_model_type=ResNetModelType.RESNET18,
                                                                         vocabulary_size=vocabulary_size).to(device)
@@ -142,18 +142,11 @@ for epoch in tqdm(range(num_epochs)):
         # aux_output: torch.Tensor = attention_based_encoder_decoder(input_images=images, captions=captions,
         #                                                            caption_lengths=caption_lengths)
 
-        feats: torch.Tensor = encoder_model(images)
-
-        # summary_writer.add_histogram(tag='image_batch', values=images.data)
-        # summary_writer.add_histogram(tag='encoded_image_batch', values=feats.data)
-
-        outputs = decoder_model(feats, captions, caption_lengths)
-        outputs2 = basic_encoder_decoder(images, captions, caption_lengths)
+        outputs = basic_encoder_decoder(images, captions, caption_lengths)
 
         loss = loss_criterion(outputs, targets)
 
-        decoder_model.zero_grad()
-        encoder_model.zero_grad()
+        basic_encoder_decoder.zero_grad()
 
         loss.backward()
         optimizer.step()
@@ -165,13 +158,11 @@ for epoch in tqdm(range(num_epochs)):
 
         # Save the model checkpoints
         if (i + 1) % 2000 == 0:
-            torch.save(decoder_model.state_dict(), os.path.join(
-                'models_dir/', 'decoder-{}-{}.ckpt'.format(epoch + 1, i + 1)))
-            torch.save(encoder_model.state_dict(), os.path.join(
-                'models_dir/', 'encoder-{}-{}.ckpt'.format(epoch + 1, i + 1)))
+            torch.save(basic_encoder_decoder.state_dict(), os.path.join(
+                'models_dir/', 'basic_encoder_decoder-{}-{}.ckpt'.format(epoch + 1, i + 1)))
 
-encoder_model.eval()
-decoder_model.eval()
+
+basic_encoder_decoder.eval()
 
 validation_transforms = transforms.Compose([
     transforms.ToTensor(),
@@ -188,8 +179,7 @@ with torch.no_grad():
         validation_file_path = os.path.join(validation_data_path, img_file)
         image_tensor: torch.Tensor = validation_transforms(Image.open(validation_file_path).convert('RGB')).unsqueeze(0)
         image_tensor = image_tensor.to(device)
-        image_features = encoder_model(image_tensor)
-        sampled_caption_indices = decoder_model.sample(image_features)
+        sampled_caption_indices = basic_encoder_decoder.sample(image_tensor)
         sampled_caption_indices = sampled_caption_indices[0].cpu().numpy()  # (1, max_seq_length) -> (max_seq_length)
 
         # Convert word_ids to words

@@ -150,8 +150,9 @@ class BasicEncoderDecoderModel(nn.Module):
 
         return self.decoder_model(image_features, captions, caption_lengths)
 
-    def sample(self, image_feature_tensor: torch.Tensor, lstm_states=None):
-        self.decoder_model.sample(image_feature_tensor, lstm_states)
+    def sample(self, input_image_tensor: torch.Tensor, lstm_states=None):
+        image_feature_tensor: torch.Tensor = self.encoder_model(input_image_tensor)
+        return self.decoder_model.sample(image_feature_tensor, lstm_states)
 
     def get_trainable_parameters(self):
         return list(self.decoder_model.parameters()) + list(self.encoder_model.linear_layer.parameters()) + list(
