@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import os
+import sys
 from enum import Enum
 from typing import Tuple, List
 
@@ -8,20 +9,16 @@ import nltk
 import numpy as np
 import torch
 import torch.nn as nn
+from PIL import Image
 from torch.nn.utils.rnn import pack_padded_sequence
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import transforms
 from tqdm import tqdm
-from PIL import Image
-
-import sys
 
 from src.main.common.vocabulary import Vocab
-from src.main.mscoco.utils_and_models import get_loader, build_vocabulary, BasicLSTMBasedDecoderModel, \
-    BasicEncoderDecoderModelWithAttention, BasicEncoderDecoderModel
-
-from src.modules.common.resnet_models import ResNetWithLastLayerModified, ResNetModelType
-
+from src.main.mscoco.utils_and_models import get_loader, build_vocabulary, BasicEncoderDecoderModelWithAttention, \
+    BasicEncoderDecoderModel
+from src.modules.common.resnet_models import ResNetModelType
 
 dataset_data_file_path: str = "/Users/abhishek.saxena/Documents/personal/mscoco"
 
@@ -118,8 +115,6 @@ attention_based_encoder_decoder = BasicEncoderDecoderModelWithAttention(resnet_m
 
 # Loss and optimizer
 loss_criterion = nn.CrossEntropyLoss()
-# parameters = list(decoder_model.parameters()) + list(encoder_model.linear_layer.parameters()) + list(
-#     encoder_model.batch_norm.parameters())
 optimizer = torch.optim.Adam(basic_encoder_decoder.get_trainable_parameters(), lr=0.001)
 
 # Train the models
@@ -128,11 +123,9 @@ total_num_steps: int = len(custom_data_loader)
 for epoch in tqdm(range(num_epochs)):
     for i, (images, captions, caption_lengths) in enumerate(custom_data_loader):
 
-        # Set mini-batch dataset
         images = images.to(device)
         captions = captions.to(device)
         targets = pack_padded_sequence(captions, caption_lengths, batch_first=True)[0]
-
 
         # Forward, backward and optimize
         # aux_output: torch.Tensor = attention_based_encoder_decoder(input_images=images, captions=captions,
